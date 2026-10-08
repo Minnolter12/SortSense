@@ -803,11 +803,16 @@ class SortSenseApp(ctk.CTk):
         watch_dir = self.dir_entry.get().strip()
         if watch_dir:
             os.environ["FILEMIND_WATCHED_DIR"] = watch_dir
+            
+            # Apply instantly
+            if self.observer:
+                self.observer.stop()
+                # Do not block the GUI thread joining the observer
+            self.start_background_watcher()
 
         self._log_raw(
             f"[Settings] Saved — model={settings.gemma_model}  host={settings.ollama_host}\n"
-            f"[Settings] Watch dir: {watch_dir or '(auto-detected)'}\n"
-            f"[Settings] Restart the app to apply any watch-directory change.\n"
+            f"[Settings] Watch dir updated: {watch_dir or '(auto-detected)'}\n"
         )
 
     # -------------------------------------------------------------------
