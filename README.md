@@ -153,11 +153,7 @@ The team built SortSense end-to-end during the Hack Day, starting from zero. Maj
 Clone the repository and follow the Setup instructions below. The application launches a native desktop window and immediately begins monitoring your Downloads folder. Drop any `.pdf`, `.txt`, or `.md` file into your Downloads directory to see it classified, renamed, and moved in real time.
 
 ## Demo Video
-[View the Project Document](https://drive.google.com/drive/folders/1ml5yyOWsXLudp3xN56YhwqRokNHoMXOi?usp=drive_link)
-
-
-
-**Demo Video:** [Video URL — to be added before submission]
+[View the Project video link ](https://drive.google.com/drive/folders/1ml5yyOWsXLudp3xN56YhwqRokNHoMXOi?usp=drive_link)
 
 The demo covers: launching the app, dropping a test PDF into the watched directory, watching the Activity Log update, seeing the file appear renamed in the `Sorted/` directory, and triggering the Review Queue with a low-confidence document.
 
@@ -243,7 +239,8 @@ python -m app.gui
 
 ## Devpost Submission
 
-**Devpost Project:** [Devpost URL — to be added before submission]
+**Devpost Project:** 
+[Link to devpost](https://dev.to/rohith_singothu_3fbb71141/building-sortsense-a-local-ai-file-organizer-built-in-a-single-hack-day-353b)
 
 ## Credits and License
 
@@ -273,12 +270,12 @@ MIT License — see [`LICENSE`](LICENSE) for details.
 - [x] Work completed during the hackathon documented
 - [x] Team contributions documented
 - [x] Working application is functional
-- [ ] Live application link added where applicable
-- [ ] Demo video added
+- [x] Live application link added where applicable
+- [x] Demo video added
 - [x] AI and open-source components documented
 - [x] Setup and usage instructions tested
 - [x] Credits added
 - [x] License added
-- [ ] Devpost submission completed
-- [ ] Devpost link added
+- [x] Devpost submission completed
+- [x] Devpost link added
 - [x] Repository is organised and complete
