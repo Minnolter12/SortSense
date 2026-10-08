@@ -356,4 +356,4 @@ The intelligence stays on the machine.
 
 ## 👨‍💻 Team Brute Force
 
-Built by **Team Brute Force** with a focus on privacy-preserving, local-first AI and practical automation.
+Built with ❤️ by **Team Brute Force** with a focus on privacy-preserving, local-first AI and practical automation.
