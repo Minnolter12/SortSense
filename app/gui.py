@@ -9,10 +9,13 @@ Architecture:
                                                       [marshal result to Tk thread]
 """
 
+import os
+import shutil
 import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
+from tkinter import filedialog
 
 import customtkinter as ctk
 
@@ -60,6 +63,38 @@ COLOR_BUTTON_SECONDARY = "#1a222f"
 COLOR_BUTTON_SECONDARY_HOVER = "#243042"
 
 
+# ---------------------------------------------------------------------------
+# Smart folder finder — checks for an existing folder matching the category
+# keyword anywhere under sorted_base_dir (case-insensitive, one level deep).
+# ---------------------------------------------------------------------------
+
+def _find_existing_category_folder(base_dir: Path, category: str) -> Path | None:
+    if not base_dir.exists():
+        return None
+    keyword = category.lower()
+    try:
+        for child in base_dir.iterdir():
+            if child.is_dir() and keyword in child.name.lower():
+                return child
+    except PermissionError:
+        pass
+    return None
+
+
+def _safe_move(src: Path, target_dir: Path, new_filename: str) -> Path:
+    """Move src → target_dir/new_filename, handling collisions. Creates target_dir if needed."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / new_filename
+    counter = 1
+    while dest.exists():
+        stem = Path(new_filename).stem
+        ext = Path(new_filename).suffix
+        dest = target_dir / f"{stem}_{counter}{ext}"
+        counter += 1
+    shutil.move(str(src), str(dest))
+    return dest
+
+
 class SortSenseApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -80,7 +115,7 @@ class SortSenseApp(ctk.CTk):
         self._processed_count = 0
         self._pending_count = 0
         self._activity_lines: list[str] = []   # newest-first
-        self._review_items: list[tuple[str, str]] = []  # (filename, reason)
+        self._review_items: list[tuple] = []  # (filename, reason, src_path, suggested_dir, suggested_name)
 
         # StringVars for the dashboard cards
         self.model_status_var = ctk.StringVar(value="Checking...")
@@ -658,7 +693,7 @@ class SortSenseApp(ctk.CTk):
         dir_input_row.grid(row=1, column=0, sticky="ew")
         dir_input_row.grid_columnconfigure(0, weight=1)
 
-        dir_entry = ctk.CTkEntry(
+        self.dir_entry = ctk.CTkEntry(
             dir_input_row,
             corner_radius=8,
             fg_color=COLOR_INPUT_BG,
@@ -666,8 +701,8 @@ class SortSenseApp(ctk.CTk):
             text_color=COLOR_TEXT_PRIMARY,
             height=38,
         )
-        dir_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        dir_entry.insert(0, ", ".join(str(d) for d in settings.watched_dirs))
+        self.dir_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.dir_entry.insert(0, ", ".join(str(d) for d in settings.watched_dirs))
 
         ctk.CTkButton(
             dir_input_row,
@@ -681,6 +716,7 @@ class SortSenseApp(ctk.CTk):
             border_width=1,
             border_color="#263345",
             font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            command=self.browse_watch_directory,
         ).grid(row=0, column=1)
 
         # Gemma Model
@@ -695,7 +731,7 @@ class SortSenseApp(ctk.CTk):
             anchor="w",
         ).pack(anchor="w", pady=(0, 6))
 
-        model_entry = ctk.CTkEntry(
+        self.model_entry = ctk.CTkEntry(
             model_section,
             corner_radius=8,
             fg_color=COLOR_INPUT_BG,
@@ -703,8 +739,8 @@ class SortSenseApp(ctk.CTk):
             text_color=COLOR_TEXT_PRIMARY,
             height=38,
         )
-        model_entry.pack(fill="x")
-        model_entry.insert(0, settings.gemma_model)
+        self.model_entry.pack(fill="x")
+        self.model_entry.insert(0, settings.gemma_model)
 
         # Ollama Host
         host_section = ctk.CTkFrame(card, fg_color="transparent")
@@ -718,7 +754,7 @@ class SortSenseApp(ctk.CTk):
             anchor="w",
         ).pack(anchor="w", pady=(0, 6))
 
-        host_entry = ctk.CTkEntry(
+        self.host_entry = ctk.CTkEntry(
             host_section,
             corner_radius=8,
             fg_color=COLOR_INPUT_BG,
@@ -726,8 +762,8 @@ class SortSenseApp(ctk.CTk):
             text_color=COLOR_TEXT_PRIMARY,
             height=38,
         )
-        host_entry.pack(fill="x")
-        host_entry.insert(0, settings.ollama_host)
+        self.host_entry.pack(fill="x")
+        self.host_entry.insert(0, settings.ollama_host)
 
         # Save Button
         btn_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -742,10 +778,37 @@ class SortSenseApp(ctk.CTk):
             hover_color=COLOR_ACCENT_HOVER,
             text_color="#ffffff",
             font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            command=self.save_settings,
         )
         save_btn.pack(side="right")
 
         return frame
+
+    # -------------------------------------------------------------------
+    # Settings callbacks
+    # -------------------------------------------------------------------
+
+    def browse_watch_directory(self):
+        """Open native folder picker to choose a watched directory."""
+        directory = filedialog.askdirectory(title="Select Watched Directory")
+        if directory:
+            self.dir_entry.delete(0, "end")
+            self.dir_entry.insert(0, directory)
+
+    def save_settings(self):
+        """Apply model/host settings immediately; persist watch dir via env var."""
+        settings.gemma_model = self.model_entry.get()
+        settings.ollama_host = self.host_entry.get()
+
+        watch_dir = self.dir_entry.get().strip()
+        if watch_dir:
+            os.environ["FILEMIND_WATCHED_DIR"] = watch_dir
+
+        self._log_raw(
+            f"[Settings] Saved — model={settings.gemma_model}  host={settings.ollama_host}\n"
+            f"[Settings] Watch dir: {watch_dir or '(auto-detected)'}\n"
+            f"[Settings] Restart the app to apply any watch-directory change.\n"
+        )
 
     # -------------------------------------------------------------------
     # Navigation
@@ -844,34 +907,45 @@ class SortSenseApp(ctk.CTk):
 
             if document.extraction_status not in ("ok", "empty"):
                 reason = f"Ingestion failed: {document.extraction_status}"
-                self.after(0, self._on_review, timestamp, filename, reason)
+                self.after(0, self._on_review, timestamp, filename, reason, path, "", filename)
                 return
 
             try:
                 analysis = analyze_document(document)
             except OllamaUnavailableError:
                 reason = "AI service unavailable (Ollama offline)"
-                self.after(0, self._on_review, timestamp, filename, reason)
+                self.after(0, self._on_review, timestamp, filename, reason, path, "", filename)
                 return
             except AnalysisParseError as exc:
                 reason = f"AI parse error: {exc}"
-                self.after(0, self._on_review, timestamp, filename, reason)
+                self.after(0, self._on_review, timestamp, filename, reason, path, "", filename)
                 return
 
             validation = validate_analysis(document, analysis)
             decision = decide(analysis, validation, original_extension=ext)
 
             if decision.action == "organize":
-                self.after(
-                    0, self._on_organize,
-                    timestamp, filename,
-                    analysis.document_type, analysis.category,
-                    analysis.confidence, decision.destination_folder,
-                    analysis.new_filename,
-                )
+                # Smart folder: find existing matching folder or create new one
+                base = settings.sorted_base_dir
+                existing = _find_existing_category_folder(base, analysis.category)
+                target_dir = existing if existing else (base / analysis.category)
+
+                try:
+                    dest = _safe_move(Path(path), target_dir, analysis.new_filename)
+                    self.after(
+                        0, self._on_organize,
+                        timestamp, filename,
+                        analysis.document_type, analysis.category,
+                        analysis.confidence, str(target_dir),
+                        dest.name,
+                    )
+                except Exception as move_exc:
+                    self.after(0, self._on_pipeline_error, timestamp, filename, str(move_exc))
             else:
                 reason = decision.reason
-                self.after(0, self._on_review, timestamp, filename, reason)
+                suggested_dir = str(settings.sorted_base_dir / analysis.category)
+                self.after(0, self._on_review, timestamp, filename, reason,
+                           path, suggested_dir, decision.suggested_filename)
 
         except Exception as exc:
             self.after(0, self._on_pipeline_error, timestamp, filename, str(exc))
@@ -886,7 +960,7 @@ class SortSenseApp(ctk.CTk):
         destination: str,
         new_filename: str,
     ):
-        """Called on Tk thread when a file passes pipeline and gets 'organize' decision."""
+        """Called on Tk thread when a file is successfully moved and renamed."""
         self._processed_count += 1
         self._processed_var.set(str(self._processed_count))
 
@@ -894,7 +968,8 @@ class SortSenseApp(ctk.CTk):
             f"• {timestamp} — ✅ {filename}\n"
             f"  Type: {doc_type} | Category: {category} | "
             f"Confidence: {confidence:.0%}\n"
-            f"  → {destination}/{new_filename}\n"
+            f"  Renamed → {new_filename}\n"
+            f"  Moved to → {destination}\n"
         )
         self._activity_lines.insert(0, line)
 
@@ -904,15 +979,26 @@ class SortSenseApp(ctk.CTk):
             f"(conf={confidence:.0%})\n"
         )
 
-    def _on_review(self, timestamp: str, filename: str, reason: str):
+    def _on_review(
+        self,
+        timestamp: str,
+        filename: str,
+        reason: str,
+        src_path: str = "",
+        suggested_dir: str = "",
+        suggested_name: str = "",
+    ):
         """Called on Tk thread when a file needs human review."""
         self._pending_count += 1
         self._pending_var.set(str(self._pending_count))
 
-        activity_line = f"• {timestamp} — ⚠️  {filename} sent to Review Queue\n  Reason: {reason}\n"
+        activity_line = (
+            f"• {timestamp} — ⚠️  {filename} → Review Queue\n"
+            f"  Reason: {reason}\n"
+        )
         self._activity_lines.insert(0, activity_line)
 
-        self._review_items.append((filename, reason))
+        self._review_items.append((filename, reason, src_path, suggested_dir, suggested_name))
         self._refresh_dashboard_activity()
         self._refresh_review_queue()
         self._log_raw(f"[{timestamp}] REVIEW: {filename} — {reason}\n")
@@ -944,7 +1030,10 @@ class SortSenseApp(ctk.CTk):
             self._review_empty_label.grid(row=0, column=0, padx=16, pady=24)
             return
 
-        for i, (fname, reason) in enumerate(self._review_items):
+        for i, item in enumerate(self._review_items):
+            fname = item[0]
+            reason = item[1]
+
             item_frame = ctk.CTkFrame(
                 self._review_scroll,
                 corner_radius=12,
@@ -1005,7 +1094,56 @@ class SortSenseApp(ctk.CTk):
                 border_width=1,
                 border_color="#263345",
                 font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+                command=lambda it=item: self._manual_review(it),
             ).grid(row=0, column=3, padx=(4, 14), pady=12)
+
+    def _manual_review(self, item: tuple):
+        """Open folder picker, move and rename the file, remove from queue."""
+        fname = item[0]
+        src_path = item[2] if len(item) > 2 else ""
+        suggested_dir = item[3] if len(item) > 3 else ""
+        suggested_name = item[4] if len(item) > 4 else ""
+
+        if not src_path or not Path(src_path).exists():
+            self._log_raw(f"[Review] File no longer exists: {src_path or fname}\n")
+            self._remove_review_item(item)
+            return
+
+        initial_dir = suggested_dir if suggested_dir and Path(suggested_dir).exists() else str(Path.home())
+        target_dir = filedialog.askdirectory(
+            title=f"Where should '{fname}' go?",
+            initialdir=initial_dir,
+        )
+        if not target_dir:
+            return  # user cancelled — do nothing
+
+        use_name = suggested_name if suggested_name else Path(src_path).name
+
+        try:
+            dest = _safe_move(Path(src_path), Path(target_dir), use_name)
+            self._log_raw(
+                f"[Review] Manually organised: {fname}\n"
+                f"  Renamed → {dest.name}\n"
+                f"  Moved to → {target_dir}\n"
+            )
+            self._processed_count += 1
+            self._processed_var.set(str(self._processed_count))
+            line = (
+                f"• [manual] — ✅ {fname}\n"
+                f"  Renamed → {dest.name} | Moved to → {target_dir}\n"
+            )
+            self._activity_lines.insert(0, line)
+            self._refresh_dashboard_activity()
+            self._remove_review_item(item)
+        except Exception as exc:
+            self._log_raw(f"[Review] Error moving {fname}: {exc}\n")
+
+    def _remove_review_item(self, item: tuple):
+        if item in self._review_items:
+            self._review_items.remove(item)
+            self._pending_count = max(0, self._pending_count - 1)
+            self._pending_var.set(str(self._pending_count))
+            self._refresh_review_queue()
 
     def _log_raw(self, msg: str):
         """Append a raw message to the Activity Log textbox. Tk-thread only."""
