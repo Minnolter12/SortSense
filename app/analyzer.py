@@ -32,18 +32,16 @@ logger = logging.getLogger(__name__)
 _MAX_TEXT_CHARS = 12_000
 
 _SYSTEM_PROMPT = """\
-You are FileMind's local document intelligence engine.
+You are SortSense's local document intelligence engine.
 
 Analyze ONLY the supplied document text.
 Return structured information matching the provided JSON schema exactly.
 
 Rules:
 - Do not invent facts not present in the document.
-- Every extracted entity and fact MUST include a short evidence snippet \
-copied verbatim from the document.
+- Generate a clear, safe `new_filename` and short `category`.
 - If a piece of information is unavailable, omit it rather than guessing.
-- Confidence represents your confidence in the overall extraction quality, \
-not confidence in a fictional fact.
+- Confidence represents your confidence in the overall classification quality.
 - Do not expose internal chain-of-thought. Only return the final JSON object.\
 """
 
