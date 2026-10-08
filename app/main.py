@@ -76,7 +76,10 @@ def start_watcher_blocking() -> None:
             print(f"[route] Moved to: {new_path}")
 
     observer = start_watcher(on_event=on_event)
-    print(f"Watching: {settings.watched_dir}  (Ctrl-C to stop)")
+    print("Watching the following directories (Ctrl-C to stop):")
+    for d in settings.watched_dirs:
+        print(f" - {d}")
+        
     try:
         while True:
             time.sleep(1)

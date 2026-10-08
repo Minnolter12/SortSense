@@ -39,7 +39,7 @@ def _collect_events(
         if len(collected) >= count:
             done.set()
 
-    observer = start_watcher(on_event=handler, watch_dir=watch_dir)
+    observer = start_watcher(on_event=handler, watch_dirs={watch_dir})
     try:
         done.wait(timeout=timeout)
     finally:
@@ -92,7 +92,7 @@ class TestWatcher:
         target = tmp_path / "hello.txt"
 
         # Allow watchdog to settle before touching the FS
-        observer = start_watcher(on_event=lambda e: None, watch_dir=tmp_path)
+        observer = start_watcher(on_event=lambda e: None, watch_dirs={tmp_path})
         observer.stop()
         observer.join()
 
@@ -106,7 +106,7 @@ class TestWatcher:
             collected.append(ev)
             done.set()
 
-        obs = start_watcher(on_event=handler, watch_dir=tmp_path)
+        obs = start_watcher(on_event=handler, watch_dirs={tmp_path})
         time.sleep(0.2)          # let watchdog settle
         target.write_text("hi")
         done.wait(timeout=3.0)
@@ -124,7 +124,7 @@ class TestWatcher:
         """Creating a sub-directory must NOT produce a FileEvent."""
         collected: list[FileEvent] = []
 
-        obs = start_watcher(on_event=lambda e: collected.append(e), watch_dir=tmp_path)
+        obs = start_watcher(on_event=lambda e: collected.append(e), watch_dirs={tmp_path})
         time.sleep(0.2)
         (tmp_path / "subdir").mkdir()
         time.sleep(1.0)          # give watchdog time to fire if it were going to
@@ -137,7 +137,7 @@ class TestWatcher:
         """Files beginning with '.' must NOT produce a FileEvent."""
         collected: list[FileEvent] = []
 
-        obs = start_watcher(on_event=lambda e: collected.append(e), watch_dir=tmp_path)
+        obs = start_watcher(on_event=lambda e: collected.append(e), watch_dirs={tmp_path})
         time.sleep(0.2)
         (tmp_path / ".hidden").write_text("secret")
         time.sleep(1.0)
@@ -150,7 +150,7 @@ class TestWatcher:
         """Files beginning with '~$' (Office temp files) must NOT produce a FileEvent."""
         collected: list[FileEvent] = []
 
-        obs = start_watcher(on_event=lambda e: collected.append(e), watch_dir=tmp_path)
+        obs = start_watcher(on_event=lambda e: collected.append(e), watch_dirs={tmp_path})
         time.sleep(0.2)
         (tmp_path / "~$budget.xlsx").write_text("temp")
         time.sleep(1.0)
@@ -163,7 +163,7 @@ class TestWatcher:
         """The same path must not produce more than one FileEvent."""
         collected: list[FileEvent] = []
 
-        obs = start_watcher(on_event=lambda e: collected.append(e), watch_dir=tmp_path)
+        obs = start_watcher(on_event=lambda e: collected.append(e), watch_dirs={tmp_path})
         time.sleep(0.2)
         p = tmp_path / "dup.txt"
         p.write_text("first")

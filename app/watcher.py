@@ -1,15 +1,8 @@
 """
-FileMind file watcher.
+SortSense file watcher.
 
-Monitors the configured directory for newly created files using watchdog.
-Emits FileEvent objects.  Has no dependency on the AI or database layers.
-
-Usage (programmatic):
-    from app.watcher import start_watcher
-    observer = start_watcher(on_event=my_callback)
-    ...
-    observer.stop()
-    observer.join()
+Monitors the configured directories for newly created files using watchdog.
+Emits FileEvent objects. Has no dependency on the AI or database layers.
 """
 
 from __future__ import annotations
@@ -29,37 +22,31 @@ logger = logging.getLogger(__name__)
 # Prefixes that identify hidden or temporary files we should ignore
 _IGNORED_PREFIXES: tuple[str, ...] = (".", "~$")
 
-
 def _should_ignore(path: Path) -> bool:
     """Return True if *path* should be silently skipped."""
     name = path.name
     return any(name.startswith(prefix) for prefix in _IGNORED_PREFIXES)
 
-
-class _FileMindHandler(FileSystemEventHandler):
+class _SortSenseHandler(FileSystemEventHandler):
     """Watchdog handler that converts raw events into FileEvent objects."""
 
     def __init__(self, on_event: Callable[[FileEvent], None]) -> None:
         super().__init__()
         self._on_event = on_event
-        self._seen: set[str] = set()  # deduplicate repeated events for the same path
+        self._seen: set[str] = set()
 
     def on_created(self, event: FileCreatedEvent) -> None:  # type: ignore[override]
-        # Skip directory events
         if event.is_directory:
             return
 
         path = Path(event.src_path).resolve()
 
-        # Skip hidden / temporary files
         if _should_ignore(path):
             logger.debug("Ignoring file: %s", path)
             return
 
-        # Deduplicate — watchdog can fire multiple events for the same path
         key = str(path)
         if key in self._seen:
-            logger.debug("Duplicate event suppressed for: %s", path)
             return
         self._seen.add(key)
 
@@ -67,23 +54,32 @@ class _FileMindHandler(FileSystemEventHandler):
         logger.info("FileEvent: %s", file_event)
         self._on_event(file_event)
 
-
 def start_watcher(
     on_event: Callable[[FileEvent], None],
-    watch_dir: Path | None = None,
+    watch_dirs: set[Path] | None = None,
 ) -> Observer:
     """
-    Start the watchdog Observer for *watch_dir* (defaults to settings.watched_dir).
+    Start the watchdog Observer for *watch_dirs* (defaults to settings.watched_dirs).
 
     Returns the running Observer so the caller can stop it when done.
     The observer runs in a daemon thread — it does NOT block the caller.
     """
-    directory = watch_dir or settings.watched_dir
-    directory = Path(directory).resolve()
+    directories = watch_dirs or settings.watched_dirs
 
-    handler = _FileMindHandler(on_event=on_event)
+    handler = _SortSenseHandler(on_event=on_event)
     observer = Observer()
-    observer.schedule(handler, str(directory), recursive=False)
+    
+    for directory in directories:
+        directory = Path(directory).resolve()
+        if not directory.exists():
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logger.warning("Failed to create watch directory %s: %s", directory, e)
+                continue
+                
+        observer.schedule(handler, str(directory), recursive=False)
+        logger.info("Watcher attached to: %s", directory)
+        
     observer.start()
-    logger.info("Watcher started on: %s", directory)
     return observer

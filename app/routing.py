@@ -25,10 +25,8 @@ def route_file(document: NormalizedDocument, analysis: DocumentAnalysis) -> Path
         logger.error("Source file does not exist: %s", source_path)
         return None
 
-    # Base destination directory is the same as watched_dir, but we could make it configurable.
-    # We will put sorted files inside `settings.watched_dir / "Sorted" / category`
-    sorted_base_dir = settings.watched_dir / "Sorted"
-    target_dir = sorted_base_dir / analysis.category
+    # We put sorted files inside `settings.sorted_base_dir / category`
+    target_dir = settings.sorted_base_dir / analysis.category
     
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
