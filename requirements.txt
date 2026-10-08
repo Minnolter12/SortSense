@@ -2,4 +2,6 @@ pydantic
 watchdog
 pymupdf
 ollama
+fastapi[standard]
+python-multipart
 pytest
