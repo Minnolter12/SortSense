@@ -5,3 +5,4 @@ ollama
 fastapi[standard]
 python-multipart
 pytest
+customtkinter
