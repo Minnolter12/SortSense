@@ -91,16 +91,14 @@ def _build_response(
     return {
         "file": {
             "name": upload_name,
-            "type": analysis.content_type if hasattr(analysis, "content_type") else f"/{ext}",
             "extension": ext,
         },
         "analysis": {
-            "document_type":  analysis.document_type,
-            "summary":        analysis.summary,
-            "entities":       [e.model_dump() for e in analysis.entities],
-            "facts":          [f.model_dump() for f in analysis.facts],
-            "confidence":     analysis.confidence,
-            "evidence_quality": analysis.evidence_quality,
+            "document_type":    analysis.document_type,
+            "category":         analysis.category,
+            "new_filename":     analysis.new_filename,
+            "summary":          analysis.summary,
+            "confidence":       analysis.confidence,
             "suggested_action": analysis.suggested_action,
         },
         "validation": {
@@ -108,13 +106,13 @@ def _build_response(
             "errors": validation_issues,
         },
         "organization": {
-            "category":          org_category,
-            "suggested_filename": org_filename,
-            "destination_folder": org_folder,
-            "action":            org_action,
-            "confidence":        org_confidence,
-            "reason":            org_reason,
-            "requires_review":   org_requires_review,
+            "category":           org_category,
+            "suggested_filename":  org_filename,
+            "destination_folder":  org_folder,
+            "action":             org_action,
+            "confidence":         org_confidence,
+            "reason":             org_reason,
+            "requires_review":    org_requires_review,
         },
     }
 

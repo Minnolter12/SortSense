@@ -10,13 +10,13 @@ from __future__ import annotations
 import io
 import shutil
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pymupdf
 import pytest
 from fastapi.testclient import TestClient
 
-from app.analysis_models import DocumentAnalysis, DocumentEntity, DocumentFact
+from app.analysis_models import DocumentAnalysis
 from app.api import app, _ALLOWED_EXTENSIONS, _MAX_UPLOAD_BYTES
 from app.analyzer import AnalysisParseError, OllamaUnavailableError
 from app.validation import ValidationResult
@@ -43,31 +43,23 @@ _SOURCE_TEXT = (
 
 _VALID_ANALYSIS = DocumentAnalysis(
     document_type="Invoice",
+    category="Finance",
+    new_filename="Acme_Invoice_INV-2024-001.txt",
     summary="An invoice from Acme Corp for $1,250.00.",
-    entities=[
-        DocumentEntity(name="Vendor", value="Acme Corp", evidence="Vendor: Acme Corp"),
-        DocumentEntity(name="Total",  value="$1,250.00", evidence="Total: $1,250.00"),
-    ],
-    facts=[
-        DocumentFact(fact="Invoice number is INV-2024-001.", evidence="Invoice #INV-2024-001"),
-    ],
     confidence=0.92,
-    evidence_quality="high",
     suggested_action="Archive",
 )
 
 _VALID_VALIDATION = ValidationResult(
     valid=True,
     confidence=0.92,
-    evidence_verified=True,
     issues=[],
 )
 
 _INVALID_VALIDATION = ValidationResult(
     valid=False,
     confidence=0.92,
-    evidence_verified=False,
-    issues=["Entity 'Vendor' evidence not found in source text."],
+    issues=["new_filename contains forbidden characters."],
 )
 
 
@@ -97,8 +89,7 @@ def _pdf_upload(filename: str = "report.pdf") -> tuple:
 
 class TestHealthEndpoint:
     def test_returns_200(self, client: TestClient):
-        resp = client.get("/health")
-        assert resp.status_code == 200
+        assert client.get("/health").status_code == 200
 
     def test_returns_ok(self, client: TestClient):
         assert client.get("/health").json() == {"status": "ok"}
@@ -112,15 +103,14 @@ class TestAnalyzeTxt:
     @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
     def test_returns_200(self, mock_analyze, mock_validate, client: TestClient):
-        resp = client.post("/analyze", files=[_txt_upload()])
-        assert resp.status_code == 200
+        assert client.post("/analyze", files=[_txt_upload()]).status_code == 200
 
     @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
     def test_response_has_all_top_level_keys(self, mock_analyze, mock_validate, client: TestClient):
         body = client.post("/analyze", files=[_txt_upload()]).json()
         for key in ("file", "analysis", "validation", "organization"):
-            assert key in body, f"Missing key: {key}"
+            assert key in body, f"Missing top-level key: {key}"
 
     @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
@@ -133,9 +123,31 @@ class TestAnalyzeTxt:
     def test_analysis_fields_present(self, mock_analyze, mock_validate, client: TestClient):
         body = client.post("/analyze", files=[_txt_upload()]).json()
         analysis = body["analysis"]
-        for key in ("document_type", "summary", "entities", "facts",
-                    "confidence", "evidence_quality", "suggested_action"):
-            assert key in analysis
+        for key in ("document_type", "category", "new_filename",
+                    "summary", "confidence", "suggested_action"):
+            assert key in analysis, f"Missing analysis field: {key}"
+
+    @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
+    @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
+    def test_analysis_no_legacy_fields(self, mock_analyze, mock_validate, client: TestClient):
+        """Verify the old entities/facts/evidence_quality fields are gone."""
+        body = client.post("/analyze", files=[_txt_upload()]).json()
+        analysis = body["analysis"]
+        assert "entities" not in analysis
+        assert "facts" not in analysis
+        assert "evidence_quality" not in analysis
+
+    @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
+    @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
+    def test_analysis_category_value(self, mock_analyze, mock_validate, client: TestClient):
+        body = client.post("/analyze", files=[_txt_upload()]).json()
+        assert body["analysis"]["category"] == "Finance"
+
+    @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
+    @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
+    def test_analysis_new_filename_value(self, mock_analyze, mock_validate, client: TestClient):
+        body = client.post("/analyze", files=[_txt_upload()]).json()
+        assert body["analysis"]["new_filename"] == "Acme_Invoice_INV-2024-001.txt"
 
     @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
@@ -151,7 +163,7 @@ class TestAnalyzeTxt:
         org = body["organization"]
         for key in ("category", "suggested_filename", "destination_folder",
                     "action", "confidence", "reason", "requires_review"):
-            assert key in org
+            assert key in org, f"Missing organization field: {key}"
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +174,7 @@ class TestAnalyzePdf:
     @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
     def test_pdf_returns_200(self, mock_analyze, mock_validate, client: TestClient):
-        resp = client.post("/analyze", files=[_pdf_upload()])
-        assert resp.status_code == 200
+        assert client.post("/analyze", files=[_pdf_upload()]).status_code == 200
 
     @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
@@ -180,8 +191,7 @@ class TestAnalyzeMd:
     @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
     def test_md_returns_200(self, mock_analyze, mock_validate, client: TestClient):
-        resp = client.post("/analyze", files=[_md_upload()])
-        assert resp.status_code == 200
+        assert client.post("/analyze", files=[_md_upload()]).status_code == 200
 
     @patch("app.api.validate_analysis", return_value=_VALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
@@ -216,6 +226,15 @@ class TestUnsupportedFile:
         ).json()
         assert "docx" in body["detail"].lower() or "unsupported" in body["detail"].lower()
 
+    def test_no_internal_path_in_415_response(self, client: TestClient):
+        body = client.post(
+            "/analyze",
+            files=[("file", ("bad.docx", b"data", "application/msword"))],
+        ).json()
+        # Must not leak filesystem paths in error details
+        assert "C:\\" not in body.get("detail", "")
+        assert "/tmp" not in body.get("detail", "")
+
 
 # ---------------------------------------------------------------------------
 # Malformed / empty upload
@@ -230,8 +249,7 @@ class TestMalformedUpload:
         assert resp.status_code == 400
 
     def test_no_file_field_returns_422(self, client: TestClient):
-        resp = client.post("/analyze")
-        assert resp.status_code == 422
+        assert client.post("/analyze").status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +259,7 @@ class TestMalformedUpload:
 class TestAnalyzerFailure:
     @patch("app.api.analyze_document", side_effect=OllamaUnavailableError("refused"))
     def test_ollama_unavailable_returns_503(self, mock_analyze, client: TestClient):
-        resp = client.post("/analyze", files=[_txt_upload()])
-        assert resp.status_code == 503
+        assert client.post("/analyze", files=[_txt_upload()]).status_code == 503
 
     @patch("app.api.analyze_document", side_effect=OllamaUnavailableError("refused"))
     def test_503_detail_mentions_ai(self, mock_analyze, client: TestClient):
@@ -251,8 +268,7 @@ class TestAnalyzerFailure:
 
     @patch("app.api.analyze_document", side_effect=AnalysisParseError("bad JSON"))
     def test_parse_error_returns_502(self, mock_analyze, client: TestClient):
-        resp = client.post("/analyze", files=[_txt_upload()])
-        assert resp.status_code == 502
+        assert client.post("/analyze", files=[_txt_upload()]).status_code == 502
 
 
 # ---------------------------------------------------------------------------
@@ -263,8 +279,7 @@ class TestValidationFailure:
     @patch("app.api.validate_analysis", return_value=_INVALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
     def test_invalid_validation_still_200(self, mock_analyze, mock_validate, client: TestClient):
-        resp = client.post("/analyze", files=[_txt_upload()])
-        assert resp.status_code == 200
+        assert client.post("/analyze", files=[_txt_upload()]).status_code == 200
 
     @patch("app.api.validate_analysis", return_value=_INVALID_VALIDATION)
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
@@ -320,13 +335,12 @@ class TestTempFileCleanup:
     @patch("app.api.analyze_document", return_value=_VALID_ANALYSIS)
     def test_temp_dir_cleaned_on_success(self, mock_analyze, mock_validate, client: TestClient):
         """Verify that no filemind_ temp directories linger after a successful request."""
-        import tempfile, os
+        import tempfile
         tmp_root = Path(tempfile.gettempdir())
         before = set(tmp_root.glob("filemind_*"))
         client.post("/analyze", files=[_txt_upload()])
         after = set(tmp_root.glob("filemind_*"))
-        new_dirs = after - before
-        assert new_dirs == set(), f"Leaked temp dirs: {new_dirs}"
+        assert (after - before) == set(), f"Leaked temp dirs: {after - before}"
 
     @patch("app.api.analyze_document", side_effect=OllamaUnavailableError("refused"))
     def test_temp_dir_cleaned_on_error(self, mock_analyze, client: TestClient):

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.analysis_models import DocumentAnalysis, DocumentEntity, DocumentFact
+from app.analysis_models import DocumentAnalysis
 from app.analyzer import (
     AnalysisParseError,
     OllamaUnavailableError,
@@ -19,7 +19,6 @@ from app.analyzer import (
     analyze_document,
 )
 from app.document import NormalizedDocument
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -30,23 +29,14 @@ SAMPLE_TEXT = (
     "Date: 2024-03-15\n"
     "Vendor: Acme Corp\n"
     "Total: $1,250.00\n"
-    "Due date: 2024-04-15\n"
 )
 
 VALID_ANALYSIS_DICT = {
-    "document_type": "Invoice",
-    "summary": "An invoice from Acme Corp for $1,250.00 due on 2024-04-15.",
-    "entities": [
-        {"name": "Vendor",   "value": "Acme Corp",   "evidence": "Vendor: Acme Corp"},
-        {"name": "Total",    "value": "$1,250.00",   "evidence": "Total: $1,250.00"},
-        {"name": "Due date", "value": "2024-04-15",  "evidence": "Due date: 2024-04-15"},
-    ],
-    "facts": [
-        {"fact": "Invoice number is INV-2024-001.", "evidence": "Invoice #INV-2024-001"},
-        {"fact": "Payment is due on 2024-04-15.",   "evidence": "Due date: 2024-04-15"},
-    ],
-    "confidence": 0.92,
-    "evidence_quality": "high",
+    "document_type":    "Invoice",
+    "category":         "Finance",
+    "new_filename":     "Acme_Invoice_INV-2024-001.txt",
+    "summary":          "An invoice from Acme Corp for $1,250.00.",
+    "confidence":       0.95,
     "suggested_action": "Archive after payment confirmed.",
 }
 
@@ -63,11 +53,6 @@ def sample_document() -> NormalizedDocument:
         page_count=None,
         extraction_status="ok",
     )
-
-
-@pytest.fixture()
-def valid_analysis() -> DocumentAnalysis:
-    return DocumentAnalysis(**VALID_ANALYSIS_DICT)
 
 
 def _make_mock_response(content: str) -> MagicMock:
@@ -87,43 +72,52 @@ class TestAnalysisModels:
     def test_valid_analysis_parses(self):
         a = DocumentAnalysis(**VALID_ANALYSIS_DICT)
         assert a.document_type == "Invoice"
-        assert a.confidence == pytest.approx(0.92)
+        assert a.category == "Finance"
+        assert a.new_filename == "Acme_Invoice_INV-2024-001.txt"
+        assert a.confidence == pytest.approx(0.95)
+
+    def test_summary_present(self):
+        a = DocumentAnalysis(**VALID_ANALYSIS_DICT)
+        assert "Acme Corp" in a.summary
+
+    def test_suggested_action_present(self):
+        a = DocumentAnalysis(**VALID_ANALYSIS_DICT)
+        assert a.suggested_action == "Archive after payment confirmed."
 
     def test_confidence_below_zero_rejected(self):
-        bad = {**VALID_ANALYSIS_DICT, "confidence": -0.1}
         with pytest.raises(Exception):
-            DocumentAnalysis(**bad)
+            DocumentAnalysis(**{**VALID_ANALYSIS_DICT, "confidence": -0.1})
 
     def test_confidence_above_one_rejected(self):
-        bad = {**VALID_ANALYSIS_DICT, "confidence": 1.01}
         with pytest.raises(Exception):
-            DocumentAnalysis(**bad)
+            DocumentAnalysis(**{**VALID_ANALYSIS_DICT, "confidence": 1.01})
 
-    def test_invalid_evidence_quality_rejected(self):
-        bad = {**VALID_ANALYSIS_DICT, "evidence_quality": "excellent"}
+    def test_confidence_bounds(self):
+        # boundary values must be accepted
+        lo = DocumentAnalysis(**{**VALID_ANALYSIS_DICT, "confidence": 0.0})
+        hi = DocumentAnalysis(**{**VALID_ANALYSIS_DICT, "confidence": 1.0})
+        assert lo.confidence == 0.0
+        assert hi.confidence == 1.0
+
+    def test_model_is_frozen(self):
+        a = DocumentAnalysis(**VALID_ANALYSIS_DICT)
         with pytest.raises(Exception):
-            DocumentAnalysis(**bad)
-
-    def test_evidence_quality_literals(self):
-        for q in ("high", "medium", "low"):
-            a = DocumentAnalysis(**{**VALID_ANALYSIS_DICT, "evidence_quality": q})
-            assert a.evidence_quality == q
-
-    def test_model_is_frozen(self, valid_analysis: DocumentAnalysis):
-        with pytest.raises(Exception):
-            valid_analysis.confidence = 0.5  # type: ignore[misc]
-
-    def test_empty_entities_allowed(self):
-        a = DocumentAnalysis(**{**VALID_ANALYSIS_DICT, "entities": []})
-        assert a.entities == []
+            a.confidence = 0.5  # type: ignore[misc]
 
     def test_schema_contains_required_keys(self):
         schema = DocumentAnalysis.model_json_schema()
         assert "properties" in schema
         props = schema["properties"]
-        for key in ("document_type", "summary", "entities", "facts",
-                    "confidence", "evidence_quality", "suggested_action"):
+        for key in ("document_type", "category", "new_filename",
+                    "summary", "confidence", "suggested_action"):
             assert key in props, f"Schema missing key: {key}"
+
+    def test_schema_has_no_entities_or_facts(self):
+        schema = DocumentAnalysis.model_json_schema()
+        props = schema.get("properties", {})
+        assert "entities" not in props
+        assert "facts" not in props
+        assert "evidence_quality" not in props
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +147,6 @@ class TestPromptBuilding:
         )
         prompt = _build_user_prompt(doc)
         assert "truncated" in prompt.lower()
-        # The actual text in the prompt must be capped
         assert len(prompt) < len(long_text)
 
 
@@ -168,8 +161,8 @@ class TestAnalyzeDocument:
             mock_client_factory.return_value.chat.return_value = mock_resp
             result = analyze_document(sample_document)
         assert isinstance(result, DocumentAnalysis)
-        assert result.document_type == "Invoice"
-        assert result.confidence == pytest.approx(0.92)
+        assert result.category == "Finance"
+        assert result.new_filename == "Acme_Invoice_INV-2024-001.txt"
 
     def test_uses_configured_model_name(self, sample_document: NormalizedDocument):
         mock_resp = _make_mock_response(json.dumps(VALID_ANALYSIS_DICT))
@@ -177,16 +170,14 @@ class TestAnalyzeDocument:
             mock_chat = mock_client_factory.return_value.chat
             mock_chat.return_value = mock_resp
             analyze_document(sample_document)
-            call_kwargs = mock_chat.call_args
-        assert call_kwargs.kwargs["model"] == "gemma4:e4b"
+        assert mock_chat.call_args.kwargs["model"] == "gemma4:e4b"
 
     def test_uses_configured_ollama_host(self, sample_document: NormalizedDocument):
         mock_resp = _make_mock_response(json.dumps(VALID_ANALYSIS_DICT))
         with patch("app.analyzer._make_client") as mock_client_factory:
             mock_client_factory.return_value.chat.return_value = mock_resp
             analyze_document(sample_document)
-            # _make_client is called once; verify Client was created (factory called)
-            mock_client_factory.assert_called_once()
+        mock_client_factory.assert_called_once()
 
     def test_schema_passed_as_format(self, sample_document: NormalizedDocument):
         mock_resp = _make_mock_response(json.dumps(VALID_ANALYSIS_DICT))
@@ -194,8 +185,7 @@ class TestAnalyzeDocument:
             mock_chat = mock_client_factory.return_value.chat
             mock_chat.return_value = mock_resp
             analyze_document(sample_document)
-            call_kwargs = mock_chat.call_args.kwargs
-        assert call_kwargs["format"] == DocumentAnalysis.model_json_schema()
+        assert mock_chat.call_args.kwargs["format"] == DocumentAnalysis.model_json_schema()
 
     def test_stream_is_false(self, sample_document: NormalizedDocument):
         mock_resp = _make_mock_response(json.dumps(VALID_ANALYSIS_DICT))
@@ -220,7 +210,6 @@ class TestAnalyzeDocument:
                 analyze_document(sample_document)
 
     def test_schema_violation_raises_parse_error(self, sample_document: NormalizedDocument):
-        # confidence out of range — valid JSON but fails Pydantic
         bad = {**VALID_ANALYSIS_DICT, "confidence": 99.0}
         mock_resp = _make_mock_response(json.dumps(bad))
         with patch("app.analyzer._make_client") as mock_client_factory:

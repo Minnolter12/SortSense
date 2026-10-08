@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.analysis_models import DocumentAnalysis, DocumentEntity, DocumentFact
+from app.analysis_models import DocumentAnalysis
 from app.organizer import OrganizationDecision, _classify_category, _safe_stem, decide
 from app.validation import ValidationResult
 
@@ -20,21 +20,19 @@ from app.validation import ValidationResult
 
 def _make_analysis(
     document_type: str = "Report",
+    category: str = "Reports",
+    new_filename: str = "report.txt",
     summary: str = "A sample report document.",
     confidence: float = 0.90,
     suggested_action: str = "Archive",
-    evidence_quality: str = "high",
-    entities: list | None = None,
-    facts: list | None = None,
 ) -> DocumentAnalysis:
     return DocumentAnalysis(
         document_type=document_type,
+        category=category,
+        new_filename=new_filename,
         summary=summary,
         confidence=confidence,
         suggested_action=suggested_action,
-        evidence_quality=evidence_quality,  # type: ignore[arg-type]
-        entities=entities or [],
-        facts=facts or [],
     )
 
 
@@ -42,7 +40,6 @@ def _valid_result(confidence: float = 0.90) -> ValidationResult:
     return ValidationResult(
         valid=True,
         confidence=confidence,
-        evidence_verified=True,
         issues=[],
     )
 
@@ -51,8 +48,7 @@ def _invalid_result(issues: list[str] | None = None) -> ValidationResult:
     return ValidationResult(
         valid=False,
         confidence=0.90,
-        evidence_verified=False,
-        issues=issues or ["Evidence not found in source text."],
+        issues=issues or ["new_filename contains forbidden characters."],
     )
 
 
@@ -62,14 +58,12 @@ def _invalid_result(issues: list[str] | None = None) -> ValidationResult:
 
 class TestOrganizationDecisionModel:
     def test_is_frozen(self):
-        analysis = _make_analysis()
-        decision = decide(analysis, _valid_result())
+        decision = decide(_make_analysis(), _valid_result())
         with pytest.raises(Exception):
             decision.category = "changed"  # type: ignore[misc]
 
     def test_returns_organization_decision(self):
-        decision = decide(_make_analysis(), _valid_result())
-        assert isinstance(decision, OrganizationDecision)
+        assert isinstance(decide(_make_analysis(), _valid_result()), OrganizationDecision)
 
     def test_all_fields_present(self):
         d = decide(_make_analysis(), _valid_result())
@@ -84,38 +78,37 @@ class TestOrganizationDecisionModel:
 
 class TestCategoryClassification:
     @pytest.mark.parametrize("doc_type, expected_category, expected_folder", [
-        ("Invoice",                   "invoice",      "Documents/Invoices"),
-        ("Tax Invoice",               "invoice",      "Documents/Invoices"),
-        ("Receipt",                   "receipt",      "Documents/Receipts"),
-        ("Purchase Receipt",          "receipt",      "Documents/Receipts"),
-        ("Resume",                    "resume",       "Documents/Resumes"),
-        ("Curriculum Vitae",          "resume",       "Documents/Resumes"),
-        ("CV Document",               "resume",       "Documents/Resumes"),
-        ("Academic Paper",            "academic",     "Documents/Academic"),
-        ("Research Paper",            "academic",     "Documents/Academic"),
-        ("Thesis",                    "academic",     "Documents/Academic"),
-        ("Journal Article",           "academic",     "Documents/Academic"),
-        ("Report",                    "report",       "Documents/Reports"),
-        ("Annual Report",             "report",       "Documents/Reports"),
-        ("Meeting Notes",             "notes",        "Documents/Notes"),
-        ("Note",                      "notes",        "Documents/Notes"),
-        ("Meeting Minutes",           "notes",        "Documents/Notes"),
-        ("Contract",                  "contract",     "Documents/Contracts"),
-        ("Service Agreement",         "contract",     "Documents/Contracts"),
-        ("NDA",                       "contract",     "Documents/Contracts"),
-        ("Lease",                     "contract",     "Documents/Contracts"),
-        ("Presentation",              "presentation", "Documents/Presentations"),
-        ("Slide Deck",                "presentation", "Documents/Presentations"),
-        ("Slides",                    "presentation", "Documents/Presentations"),
-        ("Unknown File Type",         "general",      "Documents/General"),
-        ("",                          "general",      "Documents/General"),
+        ("Invoice",            "invoice",      "Documents/Invoices"),
+        ("Tax Invoice",        "invoice",      "Documents/Invoices"),
+        ("Receipt",            "receipt",      "Documents/Receipts"),
+        ("Purchase Receipt",   "receipt",      "Documents/Receipts"),
+        ("Resume",             "resume",       "Documents/Resumes"),
+        ("Curriculum Vitae",   "resume",       "Documents/Resumes"),
+        ("CV Document",        "resume",       "Documents/Resumes"),
+        ("Academic Paper",     "academic",     "Documents/Academic"),
+        ("Research Paper",     "academic",     "Documents/Academic"),
+        ("Thesis",             "academic",     "Documents/Academic"),
+        ("Journal Article",    "academic",     "Documents/Academic"),
+        ("Report",             "report",       "Documents/Reports"),
+        ("Annual Report",      "report",       "Documents/Reports"),
+        ("Meeting Notes",      "notes",        "Documents/Notes"),
+        ("Note",               "notes",        "Documents/Notes"),
+        ("Meeting Minutes",    "notes",        "Documents/Notes"),
+        ("Contract",           "contract",     "Documents/Contracts"),
+        ("Service Agreement",  "contract",     "Documents/Contracts"),
+        ("NDA",                "contract",     "Documents/Contracts"),
+        ("Lease",              "contract",     "Documents/Contracts"),
+        ("Presentation",       "presentation", "Documents/Presentations"),
+        ("Slide Deck",         "presentation", "Documents/Presentations"),
+        ("Slides",             "presentation", "Documents/Presentations"),
+        ("Unknown File Type",  "general",      "Documents/General"),
+        ("",                   "general",      "Documents/General"),
     ])
     def test_category_and_folder(self, doc_type, expected_category, expected_folder):
         analysis = _make_analysis(document_type=doc_type)
         decision = decide(analysis, _valid_result())
         assert decision.category == expected_category, (
-            f"doc_type={doc_type!r}: expected category {expected_category!r}, "
-            f"got {decision.category!r}"
+            f"doc_type={doc_type!r}: expected {expected_category!r}, got {decision.category!r}"
         )
         assert decision.destination_folder == expected_folder
 
@@ -126,31 +119,26 @@ class TestCategoryClassification:
 
 class TestActionLogic:
     def test_high_confidence_valid_gives_organize(self):
-        # Default threshold is 0.85; confidence=0.90 → organize
         decision = decide(_make_analysis(confidence=0.90), _valid_result(0.90))
         assert decision.action == "organize"
         assert decision.requires_review is False
 
     def test_confidence_exactly_at_threshold_gives_organize(self):
-        # 0.85 >= 0.85 → organize
         decision = decide(_make_analysis(confidence=0.85), _valid_result(0.85))
         assert decision.action == "organize"
         assert decision.requires_review is False
 
     def test_low_confidence_gives_review(self):
-        # 0.50 < 0.85 → review
         decision = decide(_make_analysis(confidence=0.50), _valid_result(0.50))
         assert decision.action == "review"
         assert decision.requires_review is True
 
     def test_confidence_just_below_threshold_gives_review(self):
-        # 0.849 < 0.85 → review
         decision = decide(_make_analysis(confidence=0.849), _valid_result(0.849))
         assert decision.action == "review"
         assert decision.requires_review is True
 
     def test_invalid_validation_gives_review(self):
-        # Even high confidence must be blocked by failed validation
         decision = decide(_make_analysis(confidence=0.99), _invalid_result())
         assert decision.action == "review"
         assert decision.requires_review is True
@@ -159,17 +147,15 @@ class TestActionLogic:
         for confidence in (0.0, 0.5, 0.85, 0.99, 1.0):
             decision = decide(_make_analysis(confidence=confidence), _invalid_result())
             assert decision.action == "review", (
-                f"Expected 'review' for invalid validation with confidence={confidence}"
+                f"Expected 'review' for invalid validation at confidence={confidence}"
             )
 
     def test_confidence_propagated_to_decision(self):
-        analysis = _make_analysis(confidence=0.77)
-        decision = decide(analysis, _valid_result(0.77))
+        decision = decide(_make_analysis(confidence=0.77), _valid_result(0.77))
         assert decision.confidence == pytest.approx(0.77)
 
     def test_reason_mentions_document_type_on_organize(self):
-        analysis = _make_analysis(document_type="Invoice", confidence=0.95)
-        decision = decide(analysis, _valid_result(0.95))
+        decision = decide(_make_analysis(document_type="Invoice", confidence=0.95), _valid_result(0.95))
         assert "Invoice" in decision.reason
 
     def test_reason_mentions_threshold_on_low_confidence(self):
@@ -187,8 +173,7 @@ class TestActionLogic:
 
 class TestFilenameSafety:
     def test_extension_preserved(self):
-        analysis = _make_analysis(document_type="Invoice")
-        decision = decide(analysis, _valid_result(), original_extension="pdf")
+        decision = decide(_make_analysis(document_type="Invoice"), _valid_result(), original_extension="pdf")
         assert decision.suggested_filename.endswith(".pdf")
 
     def test_extension_preserved_txt(self):
@@ -200,7 +185,6 @@ class TestFilenameSafety:
         assert "." not in decision.suggested_filename
 
     def test_illegal_characters_removed(self):
-        # These are all illegal on Windows filesystems
         for char in ('<', '>', ':', '"', '/', '\\', '|', '?', '*'):
             raw = f"file{char}name"
             result = _safe_stem(raw)
@@ -218,13 +202,12 @@ class TestFilenameSafety:
         assert "/" not in decision.suggested_filename
 
     def test_windows_reserved_path_components_sanitised(self):
-        result = _safe_stem("CON")   # Windows reserved name — should survive but not crash
+        result = _safe_stem("CON")
         assert isinstance(result, str)
         assert len(result) > 0
 
     def test_long_filename_truncated(self):
-        raw = "A" * 200
-        result = _safe_stem(raw)
+        result = _safe_stem("A" * 200)
         assert len(result) <= 60
 
     def test_whitespace_normalised(self):
@@ -239,7 +222,6 @@ class TestFilenameSafety:
         assert ".." not in decision.suggested_filename
 
     def test_unicode_normalised(self):
-        # Full-width characters should be normalised
         result = _safe_stem("\uff26\uff29\uff2c\uff25")  # ＦＩＬＥ
         assert isinstance(result, str)
         assert len(result) > 0
