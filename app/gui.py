@@ -1152,6 +1152,7 @@ class SortSenseApp(ctk.CTk):
 
     def _log_raw(self, msg: str):
         """Append a raw message to the Activity Log textbox. Tk-thread only."""
+        print(msg.strip())  # Also log to terminal
         self.activity_textbox.configure(state="normal")
         self.activity_textbox.insert("end", msg)
         self.activity_textbox.see("end")
