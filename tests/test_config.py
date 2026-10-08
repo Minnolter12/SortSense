@@ -28,9 +28,9 @@ class TestSettingsDefaults:
         s = Settings()
         assert s.confidence_threshold == pytest.approx(0.85)
 
-    def test_default_watched_dir_is_path(self):
+    def test_default_watched_dirs_is_set(self):
         s = Settings()
-        assert isinstance(s.watched_dir, Path)
+        assert isinstance(s.watched_dirs, set)
 
 
 class TestSettingsEnvOverrides:
@@ -55,7 +55,7 @@ class TestSettingsEnvOverrides:
         )
         assert s.confidence_threshold == pytest.approx(0.70)
 
-    def test_watched_dir_override(self, monkeypatch, tmp_path):
+    def test_watched_dirs_override(self, monkeypatch, tmp_path):
         monkeypatch.setenv("FILEMIND_WATCHED_DIR", str(tmp_path))
-        s = Settings(watched_dir=Path(os.getenv("FILEMIND_WATCHED_DIR", str(Path.home() / "Documents"))))
-        assert s.watched_dir == tmp_path
+        s = Settings()
+        assert s.watched_dirs == {tmp_path.resolve()}

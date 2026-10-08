@@ -129,7 +129,8 @@ class SortSenseApp(ctk.CTk):
 
         self.activity_textbox = ctk.CTkTextbox(frame)
         self.activity_textbox.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
-        self.activity_textbox.insert("0.0", f"Watching directory: {settings.watched_dir}\n\n")
+        watched_paths = "\n".join(f" - {d}" for d in settings.watched_dirs)
+        self.activity_textbox.insert("0.0", f"Watching directories:\n{watched_paths}\n\n")
         self.activity_textbox.configure(state="disabled")
 
         return frame
@@ -176,7 +177,7 @@ class SortSenseApp(ctk.CTk):
         ctk.CTkLabel(dir_frame, text="Watched Directory:").grid(row=0, column=0, padx=10, pady=10)
         dir_entry = ctk.CTkEntry(dir_frame)
         dir_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        dir_entry.insert(0, str(settings.watched_dir))
+        dir_entry.insert(0, ", ".join(str(d) for d in settings.watched_dirs))
         ctk.CTkButton(dir_frame, text="Browse", width=80).grid(row=0, column=2, padx=10, pady=10)
 
         # Ollama Model Setting
