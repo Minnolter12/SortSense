@@ -1,0 +1,109 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  FileMind design tokens — hex values so they map 1:1 to CustomTkinter colors.
+*/
+:root {
+  color-scheme: dark;
+  --backdrop: #07080a;
+  --background: #0c0e11;
+  --foreground: #e8eaed;
+  --card: #13161b;
+  --card-foreground: #e8eaed;
+  --surface-2: #1a1e24;
+  --popover: #13161b;
+  --popover-foreground: #e8eaed;
+  --primary: #7fd1c1;
+  --primary-foreground: #0b1513;
+  --secondary: #1a1e24;
+  --secondary-foreground: #e8eaed;
+  --muted: #1a1e24;
+  --muted-foreground: #8a919c;
+  --accent: #1f242b;
+  --accent-foreground: #e8eaed;
+  --warning: #e6b566;
+  --warning-foreground: #1a1206;
+  --destructive: #e07a6e;
+  --border: #23282f;
+  --input: #2a3038;
+  --ring: #7fd1c1;
+  --chart-1: #7fd1c1;
+  --chart-2: #e6b566;
+  --chart-3: #8a919c;
+  --chart-4: #e07a6e;
+  --chart-5: #3a414b;
+  --radius: 0.625rem;
+  --sidebar: #0f1215;
+  --sidebar-foreground: #c9cdd3;
+  --sidebar-primary: #7fd1c1;
+  --sidebar-primary-foreground: #0b1513;
+  --sidebar-accent: #1a1e24;
+  --sidebar-accent-foreground: #e8eaed;
+  --sidebar-border: #1d2128;
+  --sidebar-ring: #7fd1c1;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --color-backdrop: var(--backdrop);
+  --color-surface-2: var(--surface-2);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-backdrop text-foreground font-sans;
+  }
+}
+
+.fm-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #2a3038 transparent;
+}
