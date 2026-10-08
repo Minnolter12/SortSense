@@ -153,7 +153,8 @@ The team built SortSense end-to-end during the Hack Day, starting from zero. Maj
 Clone the repository and follow the Setup instructions below. The application launches a native desktop window and immediately begins monitoring your Downloads folder. Drop any `.pdf`, `.txt`, or `.md` file into your Downloads directory to see it classified, renamed, and moved in real time.
 
 ## Demo Video
-[Clickable Text](https://drive.google.com/drive/folders/1ml5yyOWsXLudp3xN56YhwqRokNHoMXOi?usp=drive_link)
+[View the Project Document](https://drive.google.com/drive/folders/1ml5yyOWsXLudp3xN56YhwqRokNHoMXOi?usp=drive_link)
+
 
 
 **Demo Video:** [Video URL — to be added before submission]
