@@ -432,6 +432,45 @@ pytest -v
 - **Planner & Review (`tests/test_planner.py`, `tests/test_gui_intent.py`):** Non-destructive plan generation, per-file approve/reject actions, and GUI callback integration.
 - **Baseline Pipeline (`tests/test_ingestion.py`, `tests/test_analysis.py`, `tests/test_validation.py`, `tests/test_organizer.py`, `tests/test_watcher.py`):** Original 177 baseline tests covering watchers, text extractors, validation layers, and router logic.
 
+## Windows Desktop Distribution (v1.0.0)
+
+SortSense is packaged as a native 64-bit Windows desktop application, available as both a standard setup installer and a standalone portable archive.
+
+### Downloads & Verification
+
+| Distribution | File | Size | SHA-256 Checksum |
+| :--- | :--- | :--- | :--- |
+| **Windows Installer** | `SortSense-Setup-v1.0.0.exe` | 44.03 MB | `CD91E3F82DCEB35D20401ED4411CB36DDD02E7A555E6684EEC5F5EC89B47C62B` |
+| **Portable ZIP** | `SortSense-Portable-v1.0.0.zip` | 58.22 MB | `A77A88CC43EE8AFF4E6D2A0999879F5D422077FFC8B42855D04E76DEE94AC1E2` |
+
+### Installation Instructions
+
+#### Option 1: Standard Windows Installer (Recommended)
+1. Download `SortSense-Setup-v1.0.0.exe`.
+2. Run the installer. It installs cleanly into `%LOCALAPPDATA%\Programs\SortSense` without requiring administrator privileges.
+3. Launch SortSense from the Desktop shortcut or Start Menu.
+
+#### Option 2: Portable ZIP (Zero Installation)
+1. Download `SortSense-Portable-v1.0.0.zip`.
+2. Extract the archive to any desired location (e.g., a secondary drive or USB flash drive).
+3. Run `SortSense.exe` inside the extracted folder.
+   > **Note on Portable Persistence:** By default, user rules, history, and preferences are safely stored in `%USERPROFILE%\.sortsense` so they persist across portable folder updates. To isolate rules completely to a custom path, set `SORTSENSE_RULES_FILE` and `SORTSENSE_HISTORY_FILE`.
+
+#### Data Preservation on Uninstall
+Running `unins000.exe` or uninstalling via Windows Settings removes application binaries and shortcuts while **guaranteeing** that `%USERPROFILE%\.sortsense` (your personal rules, operation history, and settings) remains untouched.
+
+### Optional Ollama & Gemma 4 Setup
+
+SortSense operates out-of-the-box with full manual, rule-based, and preview organization without Ollama. To enable generative semantic classification:
+
+1. Install [Ollama](https://ollama.com) (or via `winget install Ollama.Ollama`).
+2. Pull the configured Gemma 4 model:
+   ```powershell
+   ollama pull gemma4:e4b
+   ```
+   *(To use standard models like `gemma2:2b`, set the environment variable `FILEMIND_GEMMA_MODEL=gemma2:2b`)*
+3. Launch SortSense. The dashboard automatically detects Ollama and switches to **🟢 Online · Gemma 4 AI Active** with zero application restarts required.
+
 ## Devpost Submission
 
 **Devpost Project:** 

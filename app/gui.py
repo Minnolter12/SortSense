@@ -150,6 +150,9 @@ class SortSenseApp(ctk.CTk):
         self.instruction_parser = InstructionParser(academic_config=self.academic_config)
         self.planner = OrganizationPlanner(rule_manager=self.rule_manager, academic_config=self.academic_config)
         self.executor = SafeFileExecutor(history_manager=self.history_manager)
+        self.rule_matcher = self.planner.rule_matcher
+        self.destination_resolver = self.planner.destination_resolver
+        self.safe_executor = self.executor
 
         self._current_plan: OrganizationPlan | None = None
         self._intent_mode_var = ctk.StringVar(value="Hybrid")
@@ -366,14 +369,141 @@ class SortSenseApp(ctk.CTk):
         self.frames["Settings"] = self.settings_frame
 
         # ---------------------------------------------------------------
-        # Background tasks
+        # Background tasks & Lifecycle
         # ---------------------------------------------------------------
+        self._is_shutting_down = False
+        self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        self._set_app_icon()
+
         self.check_model_status_thread()
 
         self.observer = None
         self.start_background_watcher()
 
         self.show_dashboard()
+        self.after(500, self._check_first_run)
+
+    def _set_app_icon(self):
+        """Set window icon from bundled assets if available."""
+        try:
+            from app.resources import get_resource_path
+            ico_path = get_resource_path("assets/icon.ico")
+            if ico_path.exists():
+                self.iconbitmap(str(ico_path))
+        except Exception:
+            pass
+
+    def _on_closing(self):
+        """Clean shutdown protocol when application window is closed."""
+        self._is_shutting_down = True
+        if self.observer:
+            try:
+                self.observer.stop()
+                self.observer.join(timeout=1.0)
+            except Exception:
+                pass
+        self.destroy()
+
+    def _check_first_run(self):
+        """Check if this is the user's first launch and display Welcome modal."""
+        marker_file = Path.home() / ".sortsense" / ".first_run_completed"
+        if not marker_file.exists():
+            self._show_welcome_dialog(marker_file)
+
+    def _show_welcome_dialog(self, marker_file: Path):
+        """Display clean first-run welcome and capability dialog."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Welcome to SortSense")
+        dialog.geometry("560x440")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(fg_color=COLOR_BG)
+
+        # Center dialog relative to main window
+        try:
+            x = self.winfo_x() + (self.winfo_width() // 2) - 280
+            y = self.winfo_y() + (self.winfo_height() // 2) - 220
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        card = ctk.CTkFrame(dialog, fg_color=COLOR_CARD_BG, corner_radius=14, border_width=1, border_color=COLOR_CARD_BORDER)
+        card.pack(fill="both", expand=True, padx=20, pady=20)
+
+        ctk.CTkLabel(
+            card,
+            text="✨ Welcome to SortSense",
+            font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+        ).pack(anchor="w", padx=24, pady=(20, 4))
+
+        ctk.CTkLabel(
+            card,
+            text="Offline, Privacy-First Intelligent File Organizer",
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            text_color=COLOR_ACCENT_LIGHT,
+        ).pack(anchor="w", padx=24, pady=(0, 16))
+
+        info_text = (
+            "• Zero-Setup Core Engine: Manual folder routing, custom rules,\n"
+            "  pre-execution plan preview, and 1-click undo work immediately.\n\n"
+            "• 100% Private & Offline: Your files, text, and metadata never leave\n"
+            "  your machine. No cloud accounts, telemetry, or API keys.\n\n"
+            "• Optional Local AI: You can connect local Gemma 4 via Ollama at\n"
+            "  any time to unlock natural-language semantic understanding."
+        )
+        ctk.CTkLabel(
+            card,
+            text=info_text,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLOR_TEXT_SECONDARY,
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", padx=24, pady=(0, 16))
+
+        # Status box
+        status_box = ctk.CTkFrame(card, fg_color=COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=COLOR_CARD_BORDER)
+        status_box.pack(fill="x", padx=24, pady=(0, 20))
+
+        # Check Ollama status
+        from app.analyzer import OllamaServiceManager
+        ai_active = OllamaServiceManager.is_available()
+        if ai_active:
+            status_text = "🟢 Local AI Ready: Ollama is detected. Generative natural language rules are enabled."
+            status_color = COLOR_ACCENT_LIGHT
+        else:
+            status_text = "⚡ Deterministic Mode: Ready to use! (Local Ollama AI is completely optional)."
+            status_color = "#38bdf8"
+
+        ctk.CTkLabel(
+            status_box,
+            text=status_text,
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=status_color,
+            wraplength=460,
+            justify="left",
+        ).pack(padx=14, pady=10)
+
+        def on_get_started():
+            try:
+                marker_file.parent.mkdir(parents=True, exist_ok=True)
+                marker_file.write_text("SortSense first run completed", encoding="utf-8")
+            except Exception:
+                pass
+            dialog.destroy()
+
+        ctk.CTkButton(
+            card,
+            text="Get Started",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            fg_color=COLOR_ACCENT,
+            hover_color=COLOR_ACCENT_HOVER,
+            text_color=COLOR_BG,
+            height=38,
+            corner_radius=8,
+            command=on_get_started,
+        ).pack(anchor="e", padx=24, pady=(0, 16))
 
     def _create_nav_button(self, text: str, command):
         return ctk.CTkButton(
@@ -1692,42 +1822,50 @@ class SortSenseApp(ctk.CTk):
     # -------------------------------------------------------------------
 
     def check_model_status_thread(self):
-        def check_status():
+        def update_ui(status_text: str, label_color: str, engine_text: str):
+            if getattr(self, "_is_shutting_down", False):
+                return
             try:
-                try:
-                    import ollama
-                    _ollama_installed = True
-                except ImportError:
-                    _ollama_installed = False
-
-                if not _ollama_installed:
-                    self.model_status_var.set("⚡ Deterministic (No Ollama)")
-                    self.model_status_label.configure(text_color="#38bdf8")
-                    if hasattr(self, "_engine_status_label"):
-                        self._engine_status_label.configure(
-                            text="⚡ Deterministic Mode Active · Rules & manual destinations operate offline without Ollama.",
-                            text_color="#38bdf8",
-                        )
-                else:
-                    client = ollama.Client(host=settings.ollama_host)
-                    client.list()
-                    self.model_status_var.set("🟢 Online · Gemma 4 AI Active")
-                    self.model_status_label.configure(text_color=COLOR_ACCENT_LIGHT)
-                    if hasattr(self, "_engine_status_label"):
-                        self._engine_status_label.configure(
-                            text="🤖 Gemma 4 AI Active · Generative prompt parsing & semantic classification enabled.",
-                            text_color=COLOR_ACCENT_LIGHT,
-                        )
+                self.model_status_var.set(status_text)
+                if hasattr(self, "model_status_label") and self.model_status_label.winfo_exists():
+                    self.model_status_label.configure(text_color=label_color)
+                if hasattr(self, "_engine_status_label") and self._engine_status_label.winfo_exists():
+                    self._engine_status_label.configure(text=engine_text, text_color=label_color)
             except Exception:
-                self.model_status_var.set("⚡ Active · Rule-Based Mode")
-                self.model_status_label.configure(text_color="#f59e0b")
-                if hasattr(self, "_engine_status_label"):
-                    self._engine_status_label.configure(
-                        text="⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline).",
-                        text_color="#f59e0b",
-                    )
+                pass
 
-            self.after(10000, self.check_model_status_thread)
+        def check_status():
+            if getattr(self, "_is_shutting_down", False):
+                return
+            try:
+                from app.analyzer import OllamaServiceManager
+                is_avail, _ = OllamaServiceManager.is_available()
+                if is_avail:
+                    status_text, label_color, engine_text = (
+                        "🟢 Online · Gemma 4 AI Active",
+                        COLOR_ACCENT_LIGHT,
+                        "🤖 Gemma 4 AI Active · Generative prompt parsing & semantic classification enabled.",
+                    )
+                else:
+                    status_text, label_color, engine_text = (
+                        "⚡ Active · Rule-Based Mode",
+                        "#f59e0b",
+                        "⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline).",
+                    )
+            except Exception:
+                status_text, label_color, engine_text = (
+                    "⚡ Active · Rule-Based Mode",
+                    "#f59e0b",
+                    "⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline).",
+                )
+
+            if getattr(self, "_is_shutting_down", False):
+                return
+            try:
+                self.after(0, update_ui, status_text, label_color, engine_text)
+                self.after(10000, self.check_model_status_thread)
+            except Exception:
+                pass
 
         threading.Thread(target=check_status, daemon=True).start()
 
@@ -1796,17 +1934,27 @@ class SortSenseApp(ctk.CTk):
                 )
                 target_dir = resolved.target_directory
                 dest_filename = resolved.target_filename
+
+                # Low-confidence documents must NOT bypass human review/approval safeguards
+                min_required_conf = max(match_result.matched_rule.conditions.min_confidence, settings.confidence_threshold)
+                if analysis.confidence < min_required_conf:
+                    reason = f"Low confidence ({analysis.confidence:.0%} < {min_required_conf:.0%}) despite matching rule '{match_result.matched_rule.rule_name}'"
+                    self.after(0, self._on_review, timestamp, filename, reason,
+                               path, str(target_dir), dest_filename)
+                    return
+
                 try:
                     target_dir.mkdir(parents=True, exist_ok=True)
                     record = self.safe_executor.execute_move(
                         Path(path), target_dir, dest_filename, rule=match_result.matched_rule
                     )
+                    root_name = resolved.root_folder.name if resolved.root_folder else "Organized"
                     self.after(
                         0, self._on_organize,
                         timestamp, filename,
-                        analysis.document_type, resolved.root_folder.name,
+                        analysis.document_type, root_name,
                         analysis.confidence, str(target_dir),
-                        record.destination_path.name,
+                        Path(record.destination_path).name,
                     )
                     return
                 except Exception as move_exc:
