@@ -1755,6 +1755,7 @@ class SortSenseApp(ctk.CTk):
 
         watch_dir = self.dir_entry.get().strip()
         if watch_dir:
+            os.environ["SORTSENSE_WATCHED_DIR"] = watch_dir
             os.environ["FILEMIND_WATCHED_DIR"] = watch_dir
             
             # Apply instantly
@@ -1838,26 +1839,37 @@ class SortSenseApp(ctk.CTk):
             if getattr(self, "_is_shutting_down", False):
                 return
             try:
-                from app.analyzer import OllamaServiceManager
-                is_avail, _ = OllamaServiceManager.is_available()
-                if is_avail:
-                    status_text, label_color, engine_text = (
-                        "🟢 Online · Gemma 4 AI Active",
-                        COLOR_ACCENT_LIGHT,
-                        "🤖 Gemma 4 AI Active · Generative prompt parsing & semantic classification enabled.",
-                    )
+                try:
+                    import ollama
+                    _ollama_installed = True
+                except ImportError:
+                    _ollama_installed = False
+
+                if not _ollama_installed:
+                    status_text = "⚡ Deterministic (No Ollama)"
+                    label_color = "#38bdf8"
+                    engine_text = "⚡ Deterministic Mode Active · Rules & manual destinations operate offline without Ollama."
                 else:
-                    status_text, label_color, engine_text = (
-                        "⚡ Active · Rule-Based Mode",
-                        "#f59e0b",
-                        "⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline).",
+                    from app.analyzer import OllamaServiceManager
+                    is_server_up, is_model_ready, msg = OllamaServiceManager.check_service_status(
+                        model_name=settings.gemma_model
                     )
+                    if not is_server_up:
+                        status_text = "⚡ Active · Rule-Based Mode"
+                        label_color = "#f59e0b"
+                        engine_text = "⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline)."
+                    elif not is_model_ready:
+                        status_text = f"⚠️ Model Missing ({settings.gemma_model})"
+                        label_color = "#f59e0b"
+                        engine_text = f"⚠️ Ollama is running, but '{settings.gemma_model}' is not pulled. Run 'ollama pull {settings.gemma_model}' to activate AI."
+                    else:
+                        status_text = "🟢 Online · Gemma 4 AI Active"
+                        label_color = COLOR_ACCENT_LIGHT
+                        engine_text = f"🤖 {settings.gemma_model} AI Active · Generative prompt parsing & semantic classification enabled."
             except Exception:
-                status_text, label_color, engine_text = (
-                    "⚡ Active · Rule-Based Mode",
-                    "#f59e0b",
-                    "⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline).",
-                )
+                status_text = "⚡ Active · Rule-Based Mode"
+                label_color = "#f59e0b"
+                engine_text = "⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline)."
 
             if getattr(self, "_is_shutting_down", False):
                 return

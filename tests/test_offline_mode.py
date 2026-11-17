@@ -219,6 +219,49 @@ class TestInstalledButOfflineOllamaScenario:
 
             assert mock_urlopen.call_count == first_call_count
 
+    def test_model_presence_verification(self, monkeypatch):
+        """AI must only report ready if the configured model is actually pulled on Ollama."""
+        from app.analyzer import OllamaServiceManager as OSM
+        import json
+        from io import BytesIO
+
+        monkeypatch.undo()
+        OSM.reset()
+
+        # Mock /api/tags returning gemma4:e4b
+        fake_response = json.dumps({"models": [{"name": "gemma4:e4b", "model": "gemma4:e4b"}]}).encode("utf-8")
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = fake_response
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            server_up, model_ready, msg = OSM.check_service_status(model_name="gemma4:e4b")
+            assert server_up is True
+            assert model_ready is True
+            assert "ready" in msg
+
+    def test_model_missing_verification(self, monkeypatch):
+        """If Ollama is up but the specific model is not pulled, model_ready must be False."""
+        from app.analyzer import OllamaServiceManager as OSM
+        import json
+
+        monkeypatch.undo()
+        OSM.reset()
+
+        # Mock /api/tags returning other models, but NOT gemma4:e4b
+        fake_response = json.dumps({"models": [{"name": "llama3:latest", "model": "llama3:latest"}]}).encode("utf-8")
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = fake_response
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            server_up, model_ready, msg = OSM.check_service_status(model_name="gemma4:e4b")
+            assert server_up is True
+            assert model_ready is False
+            assert "not pulled" in msg
+
 
 # ---------------------------------------------------------------------------
 # 4. Mode B (Manual Destination) Independence from AI

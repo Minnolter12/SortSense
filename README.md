@@ -163,7 +163,7 @@ flowchart LR
 
 - **Threading model** — the watcher fires events on a background thread; each file's pipeline runs on its own daemon thread; all Tkinter widget updates are marshalled back to the main thread via `self.after(0, ...)` to avoid race conditions.
 - **Pydantic v2 for all data models** — `DocumentAnalysis`, `ValidationResult`, `OrganizationRule`, `OrganizationPlan`, and `OperationRecord` are frozen Pydantic models, making invalid states unrepresentable.
-- **Confidence threshold** — configurable via `FILEMIND_CONFIDENCE_THRESHOLD` env var (default `0.85`). Files below threshold are flagged for human review rather than silently misrouted.
+- **Confidence threshold** — configurable via `SORTSENSE_CONFIDENCE_THRESHOLD` (or legacy `FILEMIND_CONFIDENCE_THRESHOLD`) env var (default `0.85`). Files below threshold are flagged for human review rather than silently misrouted.
 - **Collision-safe moves** — destination files are never overwritten; the router appends `_1`, `_2` … suffixes automatically.
 - **Local JSON persistence** — rules and operation audit logs use atomic writes with `.tmp` swapping for crash resilience with zero server or database overhead.
 
@@ -372,14 +372,29 @@ The setup script creates a Python virtual environment, installs all dependencies
 
 ### Environment Variables
 
-All settings have sensible defaults and can be overridden:
+All settings have sensible defaults and can be configured via environment variables. Standard `SORTSENSE_*` variables are preferred, with seamless backward compatibility for legacy `FILEMIND_*` variables:
+
+| Setting | Preferred Variable | Legacy Fallback | Default |
+|---|---|---|---|
+| Ollama Host | `SORTSENSE_OLLAMA_HOST` | `FILEMIND_OLLAMA_HOST` | `http://localhost:11434` |
+| Gemma Model | `SORTSENSE_GEMMA_MODEL` | `FILEMIND_GEMMA_MODEL` | `gemma4:e4b` |
+| Confidence Threshold | `SORTSENSE_CONFIDENCE_THRESHOLD` | `FILEMIND_CONFIDENCE_THRESHOLD` | `0.85` |
+| Sorted Output Directory | `SORTSENSE_SORTED_DIR` | `FILEMIND_SORTED_DIR` | `~/SortSense/Sorted` |
+| Watched Directory | `SORTSENSE_WATCHED_DIR` | `FILEMIND_WATCHED_DIR` | `~/Downloads` |
+
+Precedence order:
+1. `SORTSENSE_*` environment variable (highest priority)
+2. `FILEMIND_*` legacy environment variable
+3. Built-in default value
+
+Example configuration:
 
 ```env
-FILEMIND_OLLAMA_HOST=http://localhost:11434
-FILEMIND_GEMMA_MODEL=gemma4:e4b
-FILEMIND_CONFIDENCE_THRESHOLD=0.85
-FILEMIND_SORTED_DIR=/path/to/custom/Sorted
-FILEMIND_WATCHED_DIR=/path/to/custom/watch/folder
+SORTSENSE_OLLAMA_HOST=http://localhost:11434
+SORTSENSE_GEMMA_MODEL=gemma4:e4b
+SORTSENSE_CONFIDENCE_THRESHOLD=0.85
+SORTSENSE_SORTED_DIR=/path/to/custom/Sorted
+SORTSENSE_WATCHED_DIR=/path/to/custom/watch/folder
 ```
 
 ### Running the Project
@@ -440,8 +455,8 @@ SortSense is packaged as a native 64-bit Windows desktop application, available 
 
 | Distribution | File | Size | SHA-256 Checksum |
 | :--- | :--- | :--- | :--- |
-| **Windows Installer** | `SortSense-Setup-v1.0.0.exe` | 44.03 MB | `CD91E3F82DCEB35D20401ED4411CB36DDD02E7A555E6684EEC5F5EC89B47C62B` |
-| **Portable ZIP** | `SortSense-Portable-v1.0.0.zip` | 58.22 MB | `A77A88CC43EE8AFF4E6D2A0999879F5D422077FFC8B42855D04E76DEE94AC1E2` |
+| **Windows Installer** | `SortSense-Setup-v1.0.0.exe` | 44.02 MB | `D1844E60FDCF08262D14211E4F7C0EEA5349C4B71DFD35762EE7A6B252E888D5` |
+| **Portable ZIP** | `SortSense-Portable-v1.0.0.zip` | 58.21 MB | `556ECB4DF45AB18159E710425AC394D2BEB112078352BD2536F6FD4F986FBC30` |
 
 ### Installation Instructions
 
@@ -468,7 +483,7 @@ SortSense operates out-of-the-box with full manual, rule-based, and preview orga
    ```powershell
    ollama pull gemma4:e4b
    ```
-   *(To use standard models like `gemma2:2b`, set the environment variable `FILEMIND_GEMMA_MODEL=gemma2:2b`)*
+   *(To use standard models like `gemma2:2b`, set the environment variable `SORTSENSE_GEMMA_MODEL=gemma2:2b`)*
 3. Launch SortSense. The dashboard automatically detects Ollama and switches to **🟢 Online · Gemma 4 AI Active** with zero application restarts required.
 
 ## Devpost Submission

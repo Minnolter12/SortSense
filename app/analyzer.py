@@ -15,6 +15,7 @@ No dependency on watchdog, database, or UI layers.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -68,36 +69,58 @@ class AnalysisParseError(RuntimeError):
 
 class OllamaServiceManager:
     """
-    Manages and caches Ollama reachability status to avoid repeated health-check
-    network delays during batch file processing.
+    Manages and caches Ollama reachability and model availability status to avoid
+    repeated health-check network delays during batch file processing.
     """
     _last_checked: float = 0.0
-    _is_available: bool = False
+    _is_server_up: bool = False
+    _is_model_ready: bool = False
+    _available_models: list[str] = []
     _cooldown_seconds: float = 5.0  # Cache availability for 5 seconds
 
     @classmethod
     def reset(cls) -> None:
         """Reset cached availability state (useful in test suites)."""
         cls._last_checked = 0.0
-        cls._is_available = False
+        cls._is_server_up = False
+        cls._is_model_ready = False
+        cls._available_models = []
 
     @classmethod
     def mark_offline(cls) -> None:
         """Immediately record offline status to prevent timeout retries within the cooldown."""
-        cls._is_available = False
+        cls._is_server_up = False
+        cls._is_model_ready = False
         cls._last_checked = time.time()
 
     @classmethod
-    def is_available(cls, timeout: float = 0.5) -> bool:
+    def check_service_status(
+        cls, model_name: str | None = None, timeout: float = 0.5
+    ) -> tuple[bool, bool, str]:
         """
-        Check if Ollama service is reachable, using cached result if within cooldown.
+        Check if Ollama service is reachable AND the configured model is installed.
+        Returns (is_server_up, is_model_ready, status_message).
         """
         if not OLLAMA_INSTALLED or ollama is None:
-            return False
+            return False, False, "Ollama package is not installed."
 
+        target_model = (model_name or settings.gemma_model).strip()
         now = time.time()
-        if (now - cls._last_checked) < cls._cooldown_seconds:
-            return cls._is_available
+
+        if (now - cls._last_checked) < cls._cooldown_seconds and cls._last_checked > 0:
+            target_clean = target_model.lower()
+            model_found = any(
+                target_clean == m.lower()
+                or m.lower() == f"{target_clean}:latest"
+                or m.lower().startswith(f"{target_clean}:")
+                for m in cls._available_models
+            )
+            msg = (
+                f"Model '{target_model}' ready."
+                if (cls._is_server_up and model_found)
+                else "Model missing or server offline."
+            )
+            return cls._is_server_up, (cls._is_server_up and model_found), msg
 
         cls._last_checked = now
         host = settings.ollama_host.rstrip("/")
@@ -106,13 +129,43 @@ class OllamaServiceManager:
             req = urllib.request.Request(url, headers={"User-Agent": "SortSense-HealthCheck"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if resp.status == 200:
-                    cls._is_available = True
-                    return True
-        except Exception:
+                    cls._is_server_up = True
+                    data = json.loads(resp.read().decode("utf-8"))
+                    model_list = data.get("models", [])
+                    cls._available_models = [
+                        m.get("name", "") for m in model_list if isinstance(m, dict)
+                    ] + [
+                        m.get("model", "") for m in model_list if isinstance(m, dict)
+                    ]
+
+                    target_clean = target_model.lower()
+                    model_found = any(
+                        target_clean == m.lower()
+                        or m.lower() == f"{target_clean}:latest"
+                        or m.lower().startswith(f"{target_clean}:")
+                        for m in cls._available_models
+                    )
+                    cls._is_model_ready = model_found
+
+                    if model_found:
+                        return True, True, f"Model '{target_model}' is ready."
+                    return True, False, f"Ollama is running, but '{target_model}' is not pulled."
+        except Exception as exc:
             pass
 
-        cls._is_available = False
-        return False
+        cls._is_server_up = False
+        cls._is_model_ready = False
+        cls._available_models = []
+        return False, False, f"Ollama service unreachable at {host}."
+
+    @classmethod
+    def is_available(cls, timeout: float = 0.5) -> bool:
+        """
+        Check if Ollama service is reachable and the configured model is available.
+        Uses cached result if within cooldown.
+        """
+        server_up, model_ready, _ = cls.check_service_status(timeout=timeout)
+        return server_up and model_ready
 
 
 def _build_user_prompt(document: "NormalizedDocument") -> str:
