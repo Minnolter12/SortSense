@@ -37,3 +37,19 @@ class DocumentAnalysis(BaseModel):
     suggested_action: str = Field(
         description="Recommended next action for this document (e.g. 'Archive', 'Review', 'Follow up')."
     )
+    subject: str | None = Field(
+        default=None,
+        description="Specific academic subject or business topic, if identifiable (e.g. 'Operating Systems', 'Mathematics', 'NLP')."
+    )
+    academic_year: str | None = Field(
+        default=None,
+        description="Academic year or calendar year associated with the document if applicable (e.g. '2026', '2025-2026')."
+    )
+    semester: str | None = Field(
+        default=None,
+        description="Semester or academic term if applicable (e.g. 'Semester 4', 'Fall 2026')."
+    )
+    document_date: str | None = Field(
+        default=None,
+        description="Primary date associated with the document in YYYY-MM-DD or text format."
+    )

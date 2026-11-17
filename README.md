@@ -53,10 +53,16 @@ All processing stays on the user's machine.
 ### Key Features
 
 - **Semantic understanding** — classifies by *content*, not just extension.
-- **100% offline & private** — Gemma 4 runs via Ollama; no bytes leave the machine.
+- **Intent-Driven Natural Language Engine** — express complex organization rules in plain English (e.g., *"Move all examination question papers from this academic year into Examination Papers"*).
+- **Three Organization Modes** — Mode A (AI-Directed), Mode B (Manual Destination), and Mode C (Hybrid - Default).
+- **100% offline & private** — Gemma 4 runs via local Ollama; zero telemetry, zero cloud uploads.
+- **Pre-Execution Organization Preview** — full inspection of routing plans, confidence scores, detected academic years, and warnings with per-file approve/reject/edit controls before any files move.
+- **Deterministic Safe File Execution** — path-traversal & symlink escape guards, collision-safe automatic suffixing, and no silent overwrites.
+- **Full History & 1-Click Rollback** — persistent operation journal enabling instant undo of executed batches.
+- **Academic Year Intelligence** — configurable academic year start month separating institutional academic years from simple calendar years.
 - **Intelligent auto-renaming** — transforms `DOC-WA0012.pdf` → `Electricity_Bill_September_2026.pdf`.
-- **Smart folder matching** — finds and reuses an existing category folder instead of creating duplicates (e.g. puts a signals & systems PDF into an existing `Study_Notes/` folder).
-- **Multi-browser watch** — auto-detects Chrome, Firefox, and OS-default download paths on both Windows and Linux.
+- **Smart folder matching** — finds and reuses existing category folders instead of creating duplicates.
+- **Multi-browser watch** — auto-detects Chrome, Firefox, and OS-default download paths on Windows and Linux.
 - **Review Queue** — low-confidence files are surfaced in the GUI for manual one-click placement.
 - **Live dashboard** — real-time Files Processed, Pending Review, and Model Status counters.
 
@@ -80,6 +86,35 @@ The key differentiators are:
 
 ### Architecture
 
+#### Intent-Driven Organization & Destination Intelligence Pipeline
+
+```mermaid
+flowchart TD
+    subgraph Natural_Language_Engine["1. Natural-Language Instruction Engine"]
+        NL["Natural-Language Instruction\ne.g., 'Organize exam papers by subject'"] --> IP["InstructionParser\nLocal Gemma 4 / Heuristic"]
+        IP -->|"Validated Schema"| RM["RuleManager\nAtomic JSON Persistence"]
+    end
+
+    subgraph Destination_Intelligence["2. Destination Intelligence Layer"]
+        FILES["Input Documents\n(Downloads / Folder)"] --> ING["Text Ingestion & Analysis\npypdf / Ollama"]
+        ING --> MTCH["RuleMatcher\nMulti-Condition Evaluation & Conflict Detection"]
+        RM --> MTCH
+        MTCH --> DR["DestinationResolver\n5-Tier Priority & Hybrid Precedence"]
+        MAN["Manual Folder Selection\n(Mode B / Mode C)"] --> DR
+        DR --> PV["PathValidator\nTraversal & Symlink Escape Defense"]
+        PV --> OP["OrganizationPlanner\nGenerates Full Review Plan"]
+    end
+
+    subgraph Preview_and_Execution["3. Preview, Execution & Rollback"]
+        OP --> PREV["Interactive Preview & Review\nApprove / Reject / Edit Destinations"]
+        PREV -->|"User Confirms Batch"| SFE["SafeFileExecutor\nCollision-Safe Atomic Moves"]
+        SFE --> AUDIT["HistoryManager\nAudit Journal"]
+        AUDIT -->|"1-Click Rollback"| UNDO["Undo Operation\nRestore to Original Location"]
+    end
+```
+
+#### Background Automated Watcher Pipeline
+
 ```mermaid
 flowchart LR
     A["New File in\nDownloads / WhatsApp"] --> B["Watchdog\nEvent Listener"]
@@ -98,12 +133,12 @@ flowchart LR
 
 | Category | Technologies |
 | -------- | ------------ |
-| Frontend | CustomTkinter desktop GUI (Obsidian/Emerald theme) |
+| Frontend | CustomTkinter desktop GUI (Obsidian/Emerald theme) with Intent & Preview panes |
 | Backend | Python 3.13, Pydantic v2, `watchdog`, `shutil` |
-| Database | N/A |
-| AI / ML | Gemma 4 (`gemma4:e4b`) via Ollama, structured JSON prompting |
+| Persistence | Atomic local JSON journals (`rules.json`, `history.json`) — zero cloud |
+| AI / ML | Gemma 4 (`gemma4:e4b`) via Ollama, structured JSON prompting & heuristics |
 | Infrastructure | Local Ollama daemon, OS filesystem APIs |
-| APIs / Services | N/A — fully offline |
+| APIs / Services | N/A — fully offline, zero telemetry |
 
 ### How It Works
 
@@ -113,18 +148,152 @@ flowchart LR
 | Ingestion | `app/ingestion.py` | Extracts text from `.pdf`, `.txt`, `.md` using `pypdf` |
 | Analyser | `app/analyzer.py` | Sends extracted text to Ollama, parses `DocumentAnalysis` JSON |
 | Validation | `app/validation.py` | Blocks path-traversal, wrong extensions, null bytes; returns `ValidationResult` |
-| Organiser | `app/organizer.py` | Maps `document_type` → category slug → `destination_folder`; computes safe filename |
-| Router | `app/routing.py` + GUI smart search | Finds existing matching folder or creates new one; atomically moves + renames |
-| GUI | `app/gui.py` | CustomTkinter dashboard; all pipeline results marshalled to Tk thread via `self.after()` |
+| Instruction Parser | `app/intent/instruction_parser.py` | Converts natural-language instructions into validated Pydantic rules |
+| Rule Manager | `app/intent/rule_manager.py` | Thread-safe atomic JSON persistence for user rules (CRUD, enable/disable) |
+| Rule Matcher | `app/intent/rule_matcher.py` | Evaluates document metadata against saved rules with conflict detection |
+| Destination Resolver | `app/intent/destination_resolver.py` | Resolves target directories according to 5-tier priority and mode precedence |
+| Folder Browser | `app/intent/folder_browser.py` | Safe browsing and programmatic directory creation |
+| Path Validator | `app/intent/path_validator.py` | Validates target paths against traversal, null bytes, reserved names, and symlinks |
+| Planner | `app/intent/planner.py` | Compiles batch organization preview with explanations and confidence scores |
+| Safe Executor & Undo | `app/intent/executor.py` | Collision-safe file movements, operation logging, and 1-click rollback |
+| GUI | `app/gui.py` | CustomTkinter dashboard with Intent Selector, Preview, and History tabs |
 | Config | `app/config.py` | Pydantic `Settings` singleton; all values overridable via env vars |
 
 ### Technical Decisions
 
 - **Threading model** — the watcher fires events on a background thread; each file's pipeline runs on its own daemon thread; all Tkinter widget updates are marshalled back to the main thread via `self.after(0, ...)` to avoid race conditions.
-- **Pydantic v2 for all data models** — `DocumentAnalysis`, `ValidationResult`, and `OrganizationDecision` are frozen Pydantic models, making invalid states unrepresentable.
+- **Pydantic v2 for all data models** — `DocumentAnalysis`, `ValidationResult`, `OrganizationRule`, `OrganizationPlan`, and `OperationRecord` are frozen Pydantic models, making invalid states unrepresentable.
 - **Confidence threshold** — configurable via `FILEMIND_CONFIDENCE_THRESHOLD` env var (default `0.85`). Files below threshold are flagged for human review rather than silently misrouted.
 - **Collision-safe moves** — destination files are never overwritten; the router appends `_1`, `_2` … suffixes automatically.
-- **No FastAPI / no database** — keeping the stack minimal (pure Python + Tkinter + Ollama) means zero server processes and zero schema migrations.
+- **Local JSON persistence** — rules and operation audit logs use atomic writes with `.tmp` swapping for crash resilience with zero server or database overhead.
+
+## Intent-Driven AI File Organization Engine
+
+SortSense features an intent-driven organization architecture, allowing users to control file organization through natural-language prompts, manual folder pickers, or a hybrid combination of both.
+
+### Three Organization Modes
+
+| Mode | Identifier | Description | Example Workflow |
+| ---- | ---------- | ----------- | ---------------- |
+| **Mode A: AI-Directed** | `ai_directed` | The user provides a high-level natural language instruction. Gemma analyzes file content, identifies document types, subjects, and dates, and proposes a complete folder hierarchy. | *"Organize all my college documents by subject and semester."* &rarr; Proposes `College/<Subject>/<Semester>/` hierarchy. |
+| **Mode B: Manual Destination** | `manual_destination` | The user chooses the destination folder via folder picker. The AI identifies matching files and routes them directly to the chosen folder. | User selects `D:/College/Exam Papers/` and instructs *"Find all 2026 exam papers"*. |
+| **Mode C: Hybrid (Default)** | `hybrid` | The user provides an instruction **and** manually selects a root destination folder. The manually selected root takes strict precedence, while AI organizes subfolders inside it. | User selects `D:/College/Exam Papers/` with instruction *"Move exam papers by subject"*. &rarr; Files go to `D:/College/Exam Papers/<Subject>/`. |
+
+### Natural-Language Instruction Engine
+
+The instruction engine (`InstructionParser`) converts freeform text instructions into validated Pydantic rule models.
+
+#### Structured Schema
+
+```json
+{
+  "rule_name": "Current Year Examination Papers",
+  "conditions": {
+    "document_types": ["question_paper", "exam_paper"],
+    "academic_year": "2026",
+    "subjects": [],
+    "keywords": [],
+    "file_extensions": [".pdf", ".txt", ".md"],
+    "min_confidence": 0.7
+  },
+  "destination": {
+    "root": "Examination Papers",
+    "subfolder_pattern": null,
+    "group_by": ["subject"]
+  },
+  "rename": false,
+  "enabled": true
+}
+```
+
+#### Canonical Examples Handled
+
+1. **Academic Year Exam Papers:**
+   > *"Move all examination question papers from this academic year into Examination Papers."*
+   > - Matches document types `["exam_paper", "question_paper"]`
+   > - Automatically derives academic year (e.g., `2025-2026`) based on institutional start month.
+   > - Routes to `Examination Papers/`.
+2. **Programming Assignments:**
+   > *"Put all Python programming assignments into my Programming folder."*
+   > - Filters for assignments matching `Python` keywords.
+   > - Routes to `Programming/`.
+3. **Invoices by Company and Year:**
+   > *"Organize invoices by company and year."*
+   > - Matches `invoice` types; groups by company and calendar year (`Invoices/<Company>/<Year>/`).
+4. **NLP Research Papers:**
+   > *"Move all research papers related to NLP into my Research folder."*
+   > - Filters research papers with NLP keywords into `Research/`.
+5. **Certificates:**
+   > *"Keep all certificates in a separate folder."*
+   > - Isolates certifications and awards into `Certificates/`.
+6. **Lecture Notes:**
+   > *"Organize lecture notes by subject and semester."*
+   > - Groups lecture notes dynamically by detected subject and semester (`Notes/<Subject>/<Semester>/`).
+
+#### Ambiguity Detection & Clarification
+
+If an instruction is incomplete or ambiguous (e.g., *"Move files somewhere"*), `InstructionParser` identifies missing constraints and generates specific clarification questions instead of guessing.
+
+#### Academic Year Intelligence
+
+In academic environments, academic years (e.g. 2025–2026) cross calendar year boundaries. SortSense includes `AcademicYearConfig` with a configurable institutional start month (default August, month 8). A document dated October 2025 correctly maps to academic year `2025-2026`, rather than being misclassified into calendar year 2025.
+
+### Destination Intelligence Layer
+
+The Destination Intelligence Layer separates concerns into dedicated, single-responsibility modules:
+
+1. **`InstructionParser`** — Converts natural language into validated `OrganizationRule` models.
+2. **`RuleManager`** — Thread-safe atomic JSON store (`rules.json`) supporting CRUD and enable/disable toggling.
+3. **`RuleMatcher`** — Evaluates document metadata (type, subject, keywords, academic year, semester) against saved rules and flags rule conflicts.
+4. **`DestinationResolver`** — Resolves final target paths according to strict 5-tier priority:
+   1. *Explicit manual destination* for current operation.
+   2. *Matching saved user rule*.
+   3. *AI-generated category suggestion*.
+   4. *Existing default category folder*.
+   5. *Review queue fallback*.
+5. **`FolderBrowser`** — Safe cross-platform directory browsing and creation.
+6. **`PathValidator`** — Guards against directory traversal (`../`), null bytes, Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`), and symlink escapes.
+7. **`OrganizationPlanner`** — Compiles an end-to-end preview of all file movements, explanations, and warnings without touching the disk.
+
+### Organization Preview & Safe Execution
+
+- **No Silent Moves:** The AI proposes; the user inspects the preview before any execution.
+- **Per-File Review:** In the **Preview Plan** tab, users can approve, reject, or edit proposed destinations for individual files or approve the whole batch.
+- **Deterministic Safe File Executor (`SafeFileExecutor`):** Validates paths, enforces permissions, and applies collision avoidance (appending `_1`, `_2` suffixes rather than overwriting).
+- **Operation Journal & 1-Click Rollback (`HistoryManager`):** Every operation is recorded in `history.json`. Clicking **↩ Undo Move** safely moves files back to their original locations.
+
+## Demonstration Workflow
+
+Follow this step-by-step workflow to test the intent-driven file organization:
+
+1. **Place Incoming Files:**
+   Drop sample files (e.g., a syllabus PDF, an NLP midterm exam paper, or a Python assignment) into your `Downloads` directory.
+2. **Open SortSense Dashboard:**
+   Launch the app (`python -m app.gui`).
+3. **Select Mode & Enter Instruction:**
+   Navigate to the **✨ Intent & Rules** tab:
+   - Select **Hybrid** mode (or AI-Directed / Manual).
+   - Enter your natural-language instruction:
+     ```text
+     Move all examination question papers from this academic year into Examination Papers. Organize them by subject.
+     ```
+4. **Set Destination Folder (Mode B or C):**
+   Click **Browse...** next to Destination Folder and select `~/Documents/College/Examination Papers`.
+5. **Generate Plan Preview:**
+   Click **🔍 Generate Plan Preview**. SortSense ingests the files, parses the instruction, matches conditions, and creates a plan.
+6. **Review Proposed Changes:**
+   Switch to the **🔍 Preview Plan** tab:
+   - Verify detected document types, extracted subjects, and proposed target paths.
+   - Inspect confidence scores and routing explanations.
+   - Optionally edit individual targets or reject specific items.
+7. **Execute Approved Batch:**
+   Click **🚀 Execute Approved Batch**. SortSense safely performs collision-safe atomic moves.
+8. **Verify Output:**
+   Open `~/Documents/College/Examination Papers/` and verify that documents are neatly sorted into subject subfolders (e.g. `Examination Papers/NLP/`).
+9. **Demonstrate 1-Click Undo:**
+   Switch to the **📜 History & Undo** tab:
+   - View the execution audit log with timestamps and status.
+   - Click **↩ Undo Move** on any executed item. The file is instantly restored to its original source path.
 
 ## Implementation During the Hackathon
 
@@ -170,7 +339,7 @@ The demo covers: launching the app, dropping a test PDF into the watched directo
 - **[`customtkinter`](https://github.com/TomSchimansky/CustomTkinter) (MIT):** Modern Tkinter widgets — used to build the desktop dashboard.
 - **[`pydantic`](https://github.com/pydantic/pydantic) (MIT):** Data validation — used for all structured data models across the pipeline.
 - **[`ollama-python`](https://github.com/ollama/ollama-python) (MIT):** Python client for the local Ollama daemon.
-- **[`pytest`](https://github.com/pytest-dev/pytest) (MIT):** Test framework — 89 tests covering all pipeline layers.
+- **[`pytest`](https://github.com/pytest-dev/pytest) (MIT):** Test framework — 226 automated tests covering pipeline, intent rules, path safety, collisions, and rollback.
 
 ## Setup and Usage
 
@@ -235,7 +404,32 @@ python -m app.gui
 4. Within seconds the file is renamed and moved into `~/Documents/Sorted/<category>/`.
 5. The **Dashboard** counters increment automatically.
 6. Low-confidence files appear in the **Review Queue** — click **Review** to pick a destination folder manually.
-7. Use **Settings → Browse** to change the watched directory or output directory at any time.
+7. Switch to the **✨ Intent & Rules** tab at any time to provide natural language instructions, configure custom rules, and preview batch organizations.
+8. Use **Settings → Browse** to change the watched directory or output directory at any time.
+
+### Running the Test Suite
+
+The SortSense automated test suite contains **226 unit, integration, and security tests**. All tests are 100% deterministic and offline, using mocked LLM responses with zero cloud or live Ollama network dependencies.
+
+```bash
+# Run the entire test suite
+pytest
+
+# Or via Python module execution
+python -m pytest
+
+# Run with verbose output
+pytest -v
+```
+
+#### Test Suite Breakdown
+
+- **Natural Language Parsing & Rules (`tests/test_instruction_parser.py`, `tests/test_rule_manager.py`, `tests/test_rule_matcher.py`):** Structured rule extraction, invalid model outputs, ambiguous input clarification, atomic JSON persistence, and multi-factor rule matching.
+- **Intent Models & Configuration (`tests/test_intent_models.py`, `tests/test_config.py`):** Pydantic schemas, validation constraints, and configurable academic year calculation.
+- **Destination Intelligence & Organization Modes (`tests/test_destination_resolver.py`, `tests/test_modes_integration.py`):** Mode A (AI-Directed), Mode B (Manual Destination), Mode C (Hybrid), manual overrides, and 5-tier conflict resolution.
+- **Path Security & Filesystem Safety (`tests/test_path_validator.py`, `tests/test_executor_and_undo.py`):** Directory traversal prevention (`../`), null bytes, Windows reserved device names (`CON`, `PRN`), symlink escapes, collision suffixing (`_1`, `_2`), and 1-click operation rollback / undo.
+- **Planner & Review (`tests/test_planner.py`, `tests/test_gui_intent.py`):** Non-destructive plan generation, per-file approve/reject actions, and GUI callback integration.
+- **Baseline Pipeline (`tests/test_ingestion.py`, `tests/test_analysis.py`, `tests/test_validation.py`, `tests/test_organizer.py`, `tests/test_watcher.py`):** Original 177 baseline tests covering watchers, text extractors, validation layers, and router logic.
 
 ## Devpost Submission
 

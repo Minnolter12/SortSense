@@ -36,6 +36,24 @@ try:
 except Exception:  # pragma: no cover
     _PIPELINE_AVAILABLE = False
 
+from app.intent import (
+    AcademicYearConfig,
+    HistoryManager,
+    InstructionParser,
+    OperationRecord,
+    OrganizationMode,
+    OrganizationPlan,
+    OrganizationPlanItem,
+    OrganizationPlanner,
+    OrganizationRule,
+    PathValidator,
+    PlanItemStatus,
+    RuleCondition,
+    RuleDestination,
+    RuleManager,
+    SafeFileExecutor,
+)
+
 # Supported extensions (must match ingestion layer)
 _SUPPORTED_EXTS = {".pdf", ".txt", ".md"}
 
@@ -117,6 +135,22 @@ class SortSenseApp(ctk.CTk):
         self._activity_lines: list[str] = []   # newest-first
         self._review_items: list[tuple] = []  # (filename, reason, src_path, suggested_dir, suggested_name)
 
+        # ---------------------------------------------------------------
+        # Intent-driven system components
+        # ---------------------------------------------------------------
+        self.academic_config = AcademicYearConfig(start_month=settings.academic_year_start_month)
+        self.rule_manager = RuleManager()
+        self.history_manager = HistoryManager()
+        self.instruction_parser = InstructionParser(academic_config=self.academic_config)
+        self.planner = OrganizationPlanner(rule_manager=self.rule_manager, academic_config=self.academic_config)
+        self.executor = SafeFileExecutor(history_manager=self.history_manager)
+
+        self._current_plan: OrganizationPlan | None = None
+        self._intent_mode_var = ctk.StringVar(value="Hybrid")
+        self._manual_dest_var = ctk.StringVar(value=str(settings.sorted_base_dir))
+        self._instruction_var = ctk.StringVar(value="")
+        self._rule_status_var = ctk.StringVar(value="")
+
         # StringVars for the dashboard cards
         self.model_status_var = ctk.StringVar(value="Checking...")
         self._processed_var = ctk.StringVar(value="0")
@@ -184,19 +218,28 @@ class SortSenseApp(ctk.CTk):
         self.nav_frame.grid(row=1, column=0, padx=14, pady=0, sticky="ew")
 
         self.dashboard_button = self._create_nav_button("⊞   Dashboard", self.show_dashboard)
-        self.dashboard_button.pack(fill="x", pady=4)
+        self.dashboard_button.pack(fill="x", pady=2)
+
+        self.intent_button = self._create_nav_button("✨   Intent & Rules", self.show_intent)
+        self.intent_button.pack(fill="x", pady=2)
+
+        self.preview_button = self._create_nav_button("🔍   Preview Plan", self.show_preview)
+        self.preview_button.pack(fill="x", pady=2)
+
+        self.history_button = self._create_nav_button("📜   History & Undo", self.show_history)
+        self.history_button.pack(fill="x", pady=2)
 
         self.watched_button = self._create_nav_button("📋   Activity Log", self.show_watched)
-        self.watched_button.pack(fill="x", pady=4)
+        self.watched_button.pack(fill="x", pady=2)
 
         review_container = ctk.CTkFrame(self.nav_frame, fg_color="transparent")
-        review_container.pack(fill="x", pady=4)
+        review_container.pack(fill="x", pady=2)
 
         self.review_button = ctk.CTkButton(
             review_container,
             text="⏳   Review Queue",
             anchor="w",
-            height=40,
+            height=38,
             corner_radius=10,
             fg_color="transparent",
             text_color=COLOR_TEXT_SECONDARY,
@@ -226,7 +269,7 @@ class SortSenseApp(ctk.CTk):
         self.review_badge_label.place(relx=0.5, rely=0.5, anchor="center")
 
         self.settings_button = self._create_nav_button("⚙   Settings", self.show_settings)
-        self.settings_button.pack(fill="x", pady=4)
+        self.settings_button.pack(fill="x", pady=2)
 
         # Bottom Frame: Watched Folder & Appearance
         bottom_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
@@ -301,11 +344,17 @@ class SortSenseApp(ctk.CTk):
         self.frames: dict[str, ctk.CTkFrame] = {}
 
         self.dashboard_frame = self._create_dashboard_frame()
+        self.intent_frame = self._create_intent_frame()
+        self.preview_frame = self._create_preview_frame()
+        self.history_frame = self._create_history_frame()
         self.watched_frame = self._create_watched_frame()
         self.review_frame = self._create_review_frame()
         self.settings_frame = self._create_settings_frame()
 
         self.frames["Dashboard"] = self.dashboard_frame
+        self.frames["Intent"] = self.intent_frame
+        self.frames["Preview"] = self.preview_frame
+        self.frames["History"] = self.history_frame
         self.frames["Watched"] = self.watched_frame
         self.frames["Review"] = self.review_frame
         self.frames["Settings"] = self.settings_frame
@@ -335,7 +384,15 @@ class SortSenseApp(ctk.CTk):
         )
 
     def _set_active_nav(self, active_button):
-        for btn in [self.dashboard_button, self.watched_button, self.review_button, self.settings_button]:
+        for btn in [
+            self.dashboard_button,
+            self.intent_button,
+            self.preview_button,
+            self.history_button,
+            self.watched_button,
+            self.review_button,
+            self.settings_button,
+        ]:
             if btn == active_button:
                 btn.configure(
                     fg_color=COLOR_ACCENT_MUTED_BG,
@@ -784,6 +841,734 @@ class SortSenseApp(ctk.CTk):
 
         return frame
 
+    def _get_current_mode(self) -> OrganizationMode:
+        val = self._intent_mode_var.get().lower()
+        if "ai" in val:
+            return OrganizationMode.AI_DIRECTED
+        if "manual" in val:
+            return OrganizationMode.MANUAL_DESTINATION
+        return OrganizationMode.HYBRID
+
+    def browse_manual_destination(self):
+        directory = filedialog.askdirectory(title="Select Destination Folder")
+        if directory:
+            self._manual_dest_var.set(directory)
+
+    # -------------------------------------------------------------------
+    # Intent & Rules Frame
+    # -------------------------------------------------------------------
+
+    def _create_intent_frame(self) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(3, weight=1)
+
+        header_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        header_frame.grid(row=0, column=0, padx=28, pady=(24, 14), sticky="ew")
+
+        ctk.CTkLabel(
+            header_frame,
+            text="Intent & Rules Engine",
+            font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            header_frame,
+            text="Describe organization goals in natural language or configure reusable rules",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Input Card
+        input_card = ctk.CTkFrame(
+            frame,
+            corner_radius=14,
+            fg_color=COLOR_CARD_BG,
+            border_width=1,
+            border_color=COLOR_CARD_BORDER,
+        )
+        input_card.grid(row=1, column=0, padx=28, pady=6, sticky="ew")
+        input_card.grid_columnconfigure(0, weight=1)
+
+        # Mode Selector
+        mode_row = ctk.CTkFrame(input_card, fg_color="transparent")
+        mode_row.pack(fill="x", padx=18, pady=(14, 8))
+
+        ctk.CTkLabel(
+            mode_row,
+            text="ORGANIZATION MODE:",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLOR_TEXT_MUTED,
+        ).pack(side="left", padx=(0, 14))
+
+        mode_selector = ctk.CTkSegmentedButton(
+            mode_row,
+            values=["Hybrid", "AI-Directed", "Manual Destination"],
+            variable=self._intent_mode_var,
+            selected_color=COLOR_ACCENT,
+            selected_hover_color=COLOR_ACCENT_HOVER,
+            unselected_color=COLOR_BUTTON_SECONDARY,
+            unselected_hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+        )
+        mode_selector.pack(side="left")
+
+        # Instruction Entry
+        instr_row = ctk.CTkFrame(input_card, fg_color="transparent")
+        instr_row.pack(fill="x", padx=18, pady=6)
+        instr_row.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            instr_row,
+            text="NATURAL-LANGUAGE INSTRUCTION:",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLOR_TEXT_MUTED,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+        self.instruction_entry = ctk.CTkEntry(
+            instr_row,
+            textvariable=self._instruction_var,
+            placeholder_text="e.g. Move all examination papers from the 2026 academic year into this folder. Organize them by subject.",
+            corner_radius=8,
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_CARD_BORDER,
+            text_color=COLOR_TEXT_PRIMARY,
+            height=38,
+        )
+        self.instruction_entry.grid(row=1, column=0, sticky="ew")
+
+        # Destination Folder Row
+        dest_row = ctk.CTkFrame(input_card, fg_color="transparent")
+        dest_row.pack(fill="x", padx=18, pady=6)
+        dest_row.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            dest_row,
+            text="DESTINATION FOLDER (Manual / Hybrid Root):",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLOR_TEXT_MUTED,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+        dest_input_box = ctk.CTkFrame(dest_row, fg_color="transparent")
+        dest_input_box.grid(row=1, column=0, sticky="ew")
+        dest_input_box.grid_columnconfigure(0, weight=1)
+
+        self.manual_dest_entry = ctk.CTkEntry(
+            dest_input_box,
+            textvariable=self._manual_dest_var,
+            corner_radius=8,
+            fg_color=COLOR_INPUT_BG,
+            border_color=COLOR_CARD_BORDER,
+            text_color=COLOR_TEXT_PRIMARY,
+            height=36,
+        )
+        self.manual_dest_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        ctk.CTkButton(
+            dest_input_box,
+            text="Browse",
+            width=76,
+            height=36,
+            corner_radius=8,
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            command=self.browse_manual_destination,
+        ).grid(row=0, column=1)
+
+        # Buttons Row
+        action_bar = ctk.CTkFrame(input_card, fg_color="transparent")
+        action_bar.pack(fill="x", padx=18, pady=(10, 14))
+
+        ctk.CTkButton(
+            action_bar,
+            text="✨ Save as Reusable Rule",
+            height=36,
+            corner_radius=8,
+            fg_color=COLOR_ACCENT,
+            hover_color=COLOR_ACCENT_HOVER,
+            text_color="#ffffff",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            command=self._save_rule_from_ui,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            action_bar,
+            text="🔍 Generate Preview Plan",
+            height=36,
+            corner_radius=8,
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            command=self._generate_plan_from_ui,
+        ).pack(side="left")
+
+        self.rule_status_label = ctk.CTkLabel(
+            action_bar,
+            textvariable=self._rule_status_var,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLOR_ACCENT_LIGHT,
+        )
+        self.rule_status_label.pack(side="left", padx=14)
+
+        # Saved Rules Header
+        rules_header = ctk.CTkFrame(frame, fg_color="transparent")
+        rules_header.grid(row=2, column=0, padx=28, pady=(12, 4), sticky="ew")
+
+        ctk.CTkLabel(
+            rules_header,
+            text="Saved Rules",
+            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+        ).pack(side="left")
+
+        self._rules_scroll = ctk.CTkScrollableFrame(
+            frame,
+            corner_radius=14,
+            fg_color=COLOR_CARD_BG,
+            border_width=1,
+            border_color=COLOR_CARD_BORDER,
+        )
+        self._rules_scroll.grid(row=3, column=0, padx=28, pady=(0, 18), sticky="nsew")
+        self._rules_scroll.grid_columnconfigure(0, weight=1)
+
+        return frame
+
+    # -------------------------------------------------------------------
+    # Organization Preview Frame
+    # -------------------------------------------------------------------
+
+    def _create_preview_frame(self) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(2, weight=1)
+
+        header_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        header_frame.grid(row=0, column=0, padx=28, pady=(24, 12), sticky="ew")
+
+        ctk.CTkLabel(
+            header_frame,
+            text="Organization Preview",
+            font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            header_frame,
+            text="Review and approve proposed file movements before execution. No files are moved without approval.",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Action Bar Card
+        action_card = ctk.CTkFrame(
+            frame,
+            corner_radius=14,
+            fg_color=COLOR_CARD_BG,
+            border_width=1,
+            border_color=COLOR_CARD_BORDER,
+        )
+        action_card.grid(row=1, column=0, padx=28, pady=6, sticky="ew")
+
+        action_card_inner = ctk.CTkFrame(action_card, fg_color="transparent")
+        action_card_inner.pack(fill="x", padx=16, pady=10)
+
+        ctk.CTkButton(
+            action_card_inner,
+            text="✓ Approve All",
+            height=34,
+            corner_radius=8,
+            fg_color=COLOR_ACCENT,
+            hover_color=COLOR_ACCENT_HOVER,
+            text_color="#ffffff",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            command=self._approve_all_plan_items,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            action_card_inner,
+            text="▶ Execute Approved Batch",
+            height=34,
+            corner_radius=8,
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            text_color="#ffffff",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            command=self._execute_plan_batch,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            action_card_inner,
+            text="✕ Cancel Plan",
+            height=34,
+            corner_radius=8,
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            command=self._clear_plan,
+        ).pack(side="left")
+
+        self._plan_summary_label = ctk.CTkLabel(
+            action_card_inner,
+            text="(No active plan. Generate one from Intent & Rules or pick files)",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLOR_TEXT_MUTED,
+        )
+        self._plan_summary_label.pack(side="right", padx=10)
+
+        # Plan Items Scrollable Frame
+        self._preview_scroll = ctk.CTkScrollableFrame(
+            frame,
+            corner_radius=14,
+            fg_color=COLOR_CARD_BG,
+            border_width=1,
+            border_color=COLOR_CARD_BORDER,
+        )
+        self._preview_scroll.grid(row=2, column=0, padx=28, pady=(6, 18), sticky="nsew")
+        self._preview_scroll.grid_columnconfigure(0, weight=1)
+
+        return frame
+
+    # -------------------------------------------------------------------
+    # Operation History Frame
+    # -------------------------------------------------------------------
+
+    def _create_history_frame(self) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(2, weight=1)
+
+        header_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        header_frame.grid(row=0, column=0, padx=28, pady=(24, 12), sticky="ew")
+
+        ctk.CTkLabel(
+            header_frame,
+            text="Operation History & Undo",
+            font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            header_frame,
+            text="Audit trail of executed file movements. Revert moves safely with one click.",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Top Bar
+        top_bar = ctk.CTkFrame(frame, fg_color="transparent")
+        top_bar.grid(row=1, column=0, padx=28, pady=4, sticky="ew")
+
+        ctk.CTkButton(
+            top_bar,
+            text="🔄 Refresh History",
+            width=120,
+            height=32,
+            corner_radius=8,
+            fg_color=COLOR_BUTTON_SECONDARY,
+            hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+            text_color=COLOR_TEXT_PRIMARY,
+            command=self._refresh_history_list,
+        ).pack(side="left")
+
+        self._history_scroll = ctk.CTkScrollableFrame(
+            frame,
+            corner_radius=14,
+            fg_color=COLOR_CARD_BG,
+            border_width=1,
+            border_color=COLOR_CARD_BORDER,
+        )
+        self._history_scroll.grid(row=2, column=0, padx=28, pady=(6, 18), sticky="nsew")
+        self._history_scroll.grid_columnconfigure(0, weight=1)
+
+        return frame
+
+    # -------------------------------------------------------------------
+    # Intent Callbacks & Handlers
+    # -------------------------------------------------------------------
+
+    def _save_rule_from_ui(self):
+        instr = self._instruction_var.get().strip()
+        if not instr:
+            self._rule_status_var.set("Please enter an instruction.")
+            return
+
+        rule, clarification = self.instruction_parser.parse(instr)
+        if clarification or not rule:
+            self._rule_status_var.set(clarification or "Instruction was ambiguous.")
+            return
+
+        dest_root = self._manual_dest_var.get().strip()
+        if dest_root and not rule.destination.root:
+            rule.destination.root = dest_root
+
+        self.rule_manager.add_rule(rule)
+        self._rule_status_var.set(f"Saved rule: '{rule.rule_name}'")
+        self._refresh_rules_list()
+
+    def _generate_plan_from_ui(self):
+        """Scan watched directories or prompt user for files, then build preview plan."""
+        watch_dirs = list(settings.watched_dirs)
+        files_to_plan: list[Path] = []
+        for wd in watch_dirs:
+            if wd.exists():
+                for f in wd.iterdir():
+                    if f.is_file() and f.suffix.lower() in _SUPPORTED_EXTS:
+                        files_to_plan.append(f)
+
+        if not files_to_plan:
+            # Let user select files
+            chosen = filedialog.askopenfilenames(
+                title="Select Files to Organize",
+                filetypes=[("Documents", "*.pdf *.txt *.md"), ("All Files", "*.*")],
+            )
+            if chosen:
+                files_to_plan = [Path(p) for p in chosen]
+
+        if not files_to_plan:
+            self._rule_status_var.set("No files found to organize.")
+            return
+
+        mode = self._get_current_mode()
+        instr = self._instruction_var.get().strip()
+        manual_dest = self._manual_dest_var.get().strip() or None
+
+        self._rule_status_var.set(f"Analyzing {len(files_to_plan)} file(s)...")
+
+        def plan_worker():
+            try:
+                plan = self.planner.create_plan(
+                    file_paths=files_to_plan,
+                    mode=mode,
+                    instruction=instr,
+                    manual_destination=manual_dest,
+                )
+                self.after(0, self._on_plan_created, plan)
+            except Exception as exc:
+                self.after(0, self._rule_status_var.set, f"Plan creation failed: {exc}")
+
+        threading.Thread(target=plan_worker, daemon=True).start()
+
+    def _on_plan_created(self, plan: OrganizationPlan):
+        self._current_plan = plan
+        self._rule_status_var.set(f"Plan created: {plan.total_count} file(s).")
+        self.show_preview()
+
+    def _refresh_rules_list(self):
+        for widget in self._rules_scroll.winfo_children():
+            widget.destroy()
+
+        rules = self.rule_manager.get_all_rules()
+        if not rules:
+            ctk.CTkLabel(
+                self._rules_scroll,
+                text="(No saved rules yet. Enter an instruction above to create one.)",
+                font=ctk.CTkFont(family="Segoe UI", size=13),
+                text_color=COLOR_TEXT_MUTED,
+            ).pack(padx=16, pady=24)
+            return
+
+        for r in rules:
+            row = ctk.CTkFrame(
+                self._rules_scroll,
+                corner_radius=10,
+                fg_color=COLOR_INPUT_BG,
+                border_width=1,
+                border_color=COLOR_CARD_BORDER,
+            )
+            row.pack(fill="x", padx=6, pady=4)
+            row.grid_columnconfigure(1, weight=1)
+
+            # Toggle switch
+            switch_var = ctk.BooleanVar(value=r.enabled)
+            switch = ctk.CTkSwitch(
+                row,
+                text="",
+                variable=switch_var,
+                width=42,
+                command=lambda rule_id=r.id, var=switch_var: self.rule_manager.set_rule_enabled(rule_id, var.get()),
+            )
+            switch.grid(row=0, column=0, padx=(12, 8), pady=10)
+
+            # Info
+            info_frame = ctk.CTkFrame(row, fg_color="transparent")
+            info_frame.grid(row=0, column=1, padx=4, pady=10, sticky="w")
+
+            ctk.CTkLabel(
+                info_frame,
+                text=r.rule_name,
+                font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+                text_color=COLOR_TEXT_PRIMARY,
+            ).pack(anchor="w")
+
+            conds = []
+            if r.conditions.document_types:
+                conds.append(f"Types: {', '.join(r.conditions.document_types)}")
+            if r.conditions.subjects:
+                conds.append(f"Subject: {', '.join(r.conditions.subjects)}")
+            if r.conditions.academic_year:
+                conds.append(f"Year: {r.conditions.academic_year}")
+            if r.destination.root:
+                conds.append(f"Destination: {r.destination.root}")
+            if r.destination.group_by:
+                conds.append(f"Group by: {', '.join(r.destination.group_by)}")
+
+            ctk.CTkLabel(
+                info_frame,
+                text=" | ".join(conds) if conds else "General matching rule",
+                font=ctk.CTkFont(family="Segoe UI", size=11),
+                text_color=COLOR_TEXT_MUTED,
+            ).pack(anchor="w")
+
+            # Delete button
+            ctk.CTkButton(
+                row,
+                text="✕ Delete",
+                width=76,
+                height=30,
+                corner_radius=8,
+                fg_color="#331414",
+                hover_color="#4d1a1a",
+                text_color="#f87171",
+                command=lambda rule_id=r.id: (self.rule_manager.delete_rule(rule_id), self._refresh_rules_list()),
+            ).grid(row=0, column=2, padx=(8, 14), pady=10)
+
+    def _refresh_preview_list(self):
+        for widget in self._preview_scroll.winfo_children():
+            widget.destroy()
+
+        if not self._current_plan or not self._current_plan.items:
+            self._plan_summary_label.configure(text="(No active plan)")
+            ctk.CTkLabel(
+                self._preview_scroll,
+                text="(No files in preview. Generate a preview plan from 'Intent & Rules'.)",
+                font=ctk.CTkFont(family="Segoe UI", size=13),
+                text_color=COLOR_TEXT_MUTED,
+            ).pack(padx=16, pady=24)
+            return
+
+        total = self._current_plan.total_count
+        approved = self._current_plan.approved_count
+        self._plan_summary_label.configure(text=f"Total: {total} | Approved: {approved} | Rejected: {self._current_plan.rejected_count}")
+
+        for item in self._current_plan.items:
+            card = ctk.CTkFrame(
+                self._preview_scroll,
+                corner_radius=12,
+                fg_color=COLOR_INPUT_BG,
+                border_width=1,
+                border_color=COLOR_ACCENT_BORDER if item.status == PlanItemStatus.APPROVED else COLOR_CARD_BORDER,
+            )
+            card.pack(fill="x", padx=6, pady=5)
+            card.grid_columnconfigure(0, weight=1)
+
+            top_row = ctk.CTkFrame(card, fg_color="transparent")
+            top_row.pack(fill="x", padx=14, pady=(10, 4))
+
+            ctk.CTkLabel(
+                top_row,
+                text=f"📄 {item.original_filename}",
+                font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+                text_color=COLOR_TEXT_PRIMARY,
+            ).pack(side="left")
+
+            status_color = "#34d399" if item.status == PlanItemStatus.APPROVED else ("#f87171" if item.status == PlanItemStatus.REJECTED else "#fbbf24")
+            ctk.CTkLabel(
+                top_row,
+                text=f"[{item.status.value.upper()}]",
+                font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+                text_color=status_color,
+            ).pack(side="right")
+
+            # Routing details
+            mid_row = ctk.CTkFrame(card, fg_color="transparent")
+            mid_row.pack(fill="x", padx=14, pady=2)
+
+            details_text = f"Type: {item.detected_document_type}"
+            if item.detected_subject:
+                details_text += f" | Subject: {item.detected_subject}"
+            if item.detected_academic_year:
+                details_text += f" | Year: {item.detected_academic_year}"
+            details_text += f" | Conf: {item.confidence:.0%}"
+
+            ctk.CTkLabel(
+                mid_row,
+                text=details_text,
+                font=ctk.CTkFont(family="Segoe UI", size=11),
+                text_color=COLOR_TEXT_SECONDARY,
+            ).pack(anchor="w")
+
+            ctk.CTkLabel(
+                mid_row,
+                text=f"Target: {item.proposed_destination} / {item.proposed_filename}",
+                font=ctk.CTkFont(family="Consolas", size=11),
+                text_color=COLOR_ACCENT_LIGHT,
+            ).pack(anchor="w", pady=(2, 0))
+
+            if item.warnings:
+                ctk.CTkLabel(
+                    mid_row,
+                    text=f"⚠️ {'; '.join(item.warnings)}",
+                    font=ctk.CTkFont(family="Segoe UI", size=10),
+                    text_color="#fbbf24",
+                ).pack(anchor="w", pady=(2, 0))
+
+            # Buttons
+            btn_row = ctk.CTkFrame(card, fg_color="transparent")
+            btn_row.pack(fill="x", padx=14, pady=(6, 10))
+
+            ctk.CTkButton(
+                btn_row,
+                text="Approve",
+                width=76,
+                height=28,
+                corner_radius=6,
+                fg_color=COLOR_ACCENT,
+                hover_color=COLOR_ACCENT_HOVER,
+                text_color="#ffffff",
+                command=lambda it=item: self._approve_plan_item(it),
+            ).pack(side="left", padx=(0, 8))
+
+            ctk.CTkButton(
+                btn_row,
+                text="Reject",
+                width=76,
+                height=28,
+                corner_radius=6,
+                fg_color="#331414",
+                hover_color="#4d1a1a",
+                text_color="#f87171",
+                command=lambda it=item: self._reject_plan_item(it),
+            ).pack(side="left", padx=(0, 8))
+
+            ctk.CTkButton(
+                btn_row,
+                text="Edit Target",
+                width=88,
+                height=28,
+                corner_radius=6,
+                fg_color=COLOR_BUTTON_SECONDARY,
+                hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+                text_color=COLOR_TEXT_PRIMARY,
+                command=lambda it=item: self._edit_item_destination(it),
+            ).pack(side="left")
+
+    def _approve_plan_item(self, item: OrganizationPlanItem):
+        item.status = PlanItemStatus.APPROVED
+        self._refresh_preview_list()
+
+    def _reject_plan_item(self, item: OrganizationPlanItem):
+        item.status = PlanItemStatus.REJECTED
+        self._refresh_preview_list()
+
+    def _edit_item_destination(self, item: OrganizationPlanItem):
+        new_dir = filedialog.askdirectory(title=f"New destination for {item.original_filename}")
+        if new_dir:
+            item.proposed_destination = Path(new_dir)
+            self._refresh_preview_list()
+
+    def _approve_all_plan_items(self):
+        if self._current_plan:
+            for it in self._current_plan.items:
+                it.status = PlanItemStatus.APPROVED
+            self._refresh_preview_list()
+
+    def _clear_plan(self):
+        self._current_plan = None
+        self._refresh_preview_list()
+
+    def _execute_plan_batch(self):
+        if not self._current_plan:
+            return
+
+        plan = self._current_plan
+
+        def worker():
+            s_cnt, f_cnt, errs = self.executor.execute_plan(plan, only_approved=True)
+            self.after(0, self._on_batch_executed, s_cnt, f_cnt, errs)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_batch_executed(self, success_cnt: int, fail_cnt: int, errors: list[str]):
+        self._processed_count += success_cnt
+        self._processed_var.set(str(self._processed_count))
+        self._log_raw(f"[Batch Execute] Success: {success_cnt}, Failed: {fail_cnt}\n")
+        self._refresh_preview_list()
+        self._refresh_history_list()
+        self.show_history()
+
+    def _refresh_history_list(self):
+        for widget in self._history_scroll.winfo_children():
+            widget.destroy()
+
+        records = self.history_manager.get_records()
+        if not records:
+            ctk.CTkLabel(
+                self._history_scroll,
+                text="(No executed operations in history.)",
+                font=ctk.CTkFont(family="Segoe UI", size=13),
+                text_color=COLOR_TEXT_MUTED,
+            ).pack(padx=16, pady=24)
+            return
+
+        for r in records:
+            card = ctk.CTkFrame(
+                self._history_scroll,
+                corner_radius=10,
+                fg_color=COLOR_INPUT_BG,
+                border_width=1,
+                border_color=COLOR_CARD_BORDER,
+            )
+            card.pack(fill="x", padx=6, pady=4)
+            card.grid_columnconfigure(0, weight=1)
+
+            info_col = ctk.CTkFrame(card, fg_color="transparent")
+            info_col.grid(row=0, column=0, padx=12, pady=10, sticky="w")
+
+            time_str = r.timestamp.split("T")[0] + " " + r.timestamp.split("T")[1][:8] if "T" in r.timestamp else r.timestamp
+            ctk.CTkLabel(
+                info_col,
+                text=f"[{time_str}] {Path(r.original_path).name} → {Path(r.destination_path).parent.name}",
+                font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+                text_color=COLOR_TEXT_PRIMARY,
+            ).pack(anchor="w")
+
+            status_txt = f"Status: {r.status.upper()} | Mode: {r.mode}"
+            if r.rule_name:
+                status_txt += f" | Rule: {r.rule_name}"
+            ctk.CTkLabel(
+                info_col,
+                text=status_txt,
+                font=ctk.CTkFont(family="Segoe UI", size=11),
+                text_color=COLOR_TEXT_MUTED,
+            ).pack(anchor="w")
+
+            if r.can_undo and r.status == "success":
+                ctk.CTkButton(
+                    card,
+                    text="↩ Undo Move",
+                    width=90,
+                    height=28,
+                    corner_radius=6,
+                    fg_color=COLOR_BUTTON_SECONDARY,
+                    hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+                    text_color=COLOR_ACCENT_LIGHT,
+                    command=lambda op_id=r.operation_id: self._undo_operation(op_id),
+                ).grid(row=0, column=2, padx=12, pady=10)
+
+    def _undo_operation(self, op_id: str):
+        success, msg = self.executor.undo_operation(op_id)
+        self._log_raw(f"[Undo] {msg}\n")
+        self._refresh_history_list()
+
     # -------------------------------------------------------------------
     # Settings callbacks
     # -------------------------------------------------------------------
@@ -842,6 +1627,24 @@ class SortSenseApp(ctk.CTk):
         self.hide_all_frames()
         self._set_active_nav(self.settings_button)
         self.settings_frame.grid(row=0, column=1, sticky="nsew")
+
+    def show_intent(self):
+        self.hide_all_frames()
+        self._set_active_nav(self.intent_button)
+        self._refresh_rules_list()
+        self.intent_frame.grid(row=0, column=1, sticky="nsew")
+
+    def show_preview(self):
+        self.hide_all_frames()
+        self._set_active_nav(self.preview_button)
+        self._refresh_preview_list()
+        self.preview_frame.grid(row=0, column=1, sticky="nsew")
+
+    def show_history(self):
+        self.hide_all_frames()
+        self._set_active_nav(self.history_button)
+        self._refresh_history_list()
+        self.history_frame.grid(row=0, column=1, sticky="nsew")
 
     def change_appearance_mode_event(self, new_appearance_mode: str):
         ctk.set_appearance_mode(new_appearance_mode)

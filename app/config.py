@@ -23,6 +23,16 @@ class Settings(BaseModel):
     # Default output folder for sorted files
     sorted_base_dir: Path = Path(os.getenv("FILEMIND_SORTED_DIR", str(Path.home() / "Documents" / "Sorted")))
 
+    # Academic year configuration (default starts in August, month 8)
+    academic_year_start_month: int = int(os.getenv("SORTSENSE_ACADEMIC_YEAR_START_MONTH", "8"))
+
+    # Intent-driven rule and history persistence paths
+    rules_file: Path = Path(os.getenv("SORTSENSE_RULES_FILE", str(Path.home() / ".sortsense" / "rules.json")))
+    history_file: Path = Path(os.getenv("SORTSENSE_HISTORY_FILE", str(Path.home() / ".sortsense" / "history.json")))
+
+    # Default organization mode: "hybrid", "ai_directed", or "manual_destination"
+    default_organization_mode: str = os.getenv("SORTSENSE_DEFAULT_MODE", "hybrid")
+
     @property
     def watched_dirs(self) -> set[Path]:
         """Dynamically detect all standard and browser download folders."""
