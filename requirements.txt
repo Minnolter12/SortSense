@@ -5,4 +5,7 @@ ollama
 fastapi[standard]
 python-multipart
 pytest
+pytest-mock
 customtkinter
+pillow
+pyinstaller

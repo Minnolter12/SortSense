@@ -80,6 +80,7 @@ def start_watcher(
 
     handler = _SortSenseHandler(on_event=on_event)
     observer = Observer()
+    observer.daemon = True
     
     for directory in directories:
         directory = Path(directory).resolve()
