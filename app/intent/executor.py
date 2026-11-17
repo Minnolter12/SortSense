@@ -79,6 +79,11 @@ class HistoryManager:
             self._records.insert(0, record)  # newest first
             self.save_history()
 
+    def get_history(self) -> list[OperationRecord]:
+        """Return list of historical operations."""
+        with self._lock:
+            return list(self._records)
+
     def get_records(self, limit: int = 50) -> list[OperationRecord]:
         """Retrieve recent records."""
         with self._lock:
@@ -196,6 +201,39 @@ class SafeFileExecutor:
         self.history.record_operation(record)
 
         return True, target_file, None
+
+    def execute_move(
+        self,
+        source_path: Path,
+        destination_dir: Path,
+        destination_filename: str,
+        rule: object | None = None,
+        mode_name: str = "manual",
+    ) -> OperationRecord:
+        """
+        Directly execute a collision-safe move for a single file and record history.
+        """
+        rule_id = getattr(rule, "id", None) if rule else None
+        rule_name = getattr(rule, "rule_name", None) if rule else None
+
+        item = OrganizationPlanItem(
+            original_path=source_path,
+            original_filename=source_path.name,
+            detected_document_type="Manual",
+            proposed_destination=destination_dir,
+            proposed_filename=destination_filename,
+            matched_rule_id=rule_id,
+            matched_rule_name=rule_name,
+            confidence=1.0,
+            explanation=f"Executed move to '{destination_dir.name}'",
+            status=PlanItemStatus.APPROVED,
+        )
+        success, dest_path, err = self.execute_plan_item(item, mode_name=mode_name)
+        if not success or dest_path is None:
+            raise RuntimeError(err or "Failed to move file safely")
+
+        records = self.history.get_history()
+        return records[0]
 
     def execute_plan(
         self,

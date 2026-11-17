@@ -29,7 +29,13 @@ from app.watcher import start_watcher
 # ---------------------------------------------------------------------------
 try:
     from app.ingestion import ingest_file
-    from app.analyzer import analyze_document, OllamaUnavailableError, AnalysisParseError
+    from app.analyzer import (
+        analyze_document,
+        safe_analyze_document,
+        deterministic_analyze_document,
+        OllamaUnavailableError,
+        AnalysisParseError,
+    )
     from app.validation import validate_analysis
     from app.organizer import decide
     _PIPELINE_AVAILABLE = True
@@ -849,6 +855,17 @@ class SortSenseApp(ctk.CTk):
             return OrganizationMode.MANUAL_DESTINATION
         return OrganizationMode.HYBRID
 
+    def _on_mode_changed(self, value: str):
+        val = value.lower()
+        if "manual" in val:
+            msg = "Manual Mode: 100% independent of AI. Files are routed directly to your chosen folder."
+        elif "ai" in val:
+            msg = "AI-Directed Mode: Automatically detects types, subjects, and dates to build folder hierarchy."
+        else:
+            msg = "Hybrid Mode (Default): Manually chosen root takes precedence. Subfolders organized via rules/AI."
+        if hasattr(self, "_mode_guidance_label"):
+            self._mode_guidance_label.configure(text=msg)
+
     def browse_manual_destination(self):
         directory = filedialog.askdirectory(title="Select Destination Folder")
         if directory:
@@ -895,7 +912,7 @@ class SortSenseApp(ctk.CTk):
 
         # Mode Selector
         mode_row = ctk.CTkFrame(input_card, fg_color="transparent")
-        mode_row.pack(fill="x", padx=18, pady=(14, 8))
+        mode_row.pack(fill="x", padx=18, pady=(14, 4))
 
         ctk.CTkLabel(
             mode_row,
@@ -908,6 +925,7 @@ class SortSenseApp(ctk.CTk):
             mode_row,
             values=["Hybrid", "AI-Directed", "Manual Destination"],
             variable=self._intent_mode_var,
+            command=self._on_mode_changed,
             selected_color=COLOR_ACCENT,
             selected_hover_color=COLOR_ACCENT_HOVER,
             unselected_color=COLOR_BUTTON_SECONDARY,
@@ -915,6 +933,26 @@ class SortSenseApp(ctk.CTk):
             font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
         )
         mode_selector.pack(side="left")
+
+        # Mode Guidance Label
+        self._mode_guidance_label = ctk.CTkLabel(
+            input_card,
+            text="Hybrid Mode (Default): Manually chosen root takes precedence. Subfolders organized via rules/AI.",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLOR_TEXT_MUTED,
+            anchor="w",
+        )
+        self._mode_guidance_label.pack(fill="x", padx=18, pady=(2, 6))
+
+        # Engine Status Banner
+        self._engine_status_label = ctk.CTkLabel(
+            input_card,
+            text="⚡ Deterministic Mode Active · Rules & manual destinations operate offline without Ollama.",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color="#f59e0b",
+            anchor="w",
+        )
+        self._engine_status_label.pack(fill="x", padx=18, pady=(0, 6))
 
         # Instruction Entry
         instr_row = ctk.CTkFrame(input_card, fg_color="transparent")
@@ -1656,14 +1694,38 @@ class SortSenseApp(ctk.CTk):
     def check_model_status_thread(self):
         def check_status():
             try:
-                import ollama
-                client = ollama.Client(host=settings.ollama_host)
-                client.list()
-                self.model_status_var.set("🟢 Active (Ollama Running)")
-                self.model_status_label.configure(text_color=COLOR_ACCENT_LIGHT)
+                try:
+                    import ollama
+                    _ollama_installed = True
+                except ImportError:
+                    _ollama_installed = False
+
+                if not _ollama_installed:
+                    self.model_status_var.set("⚡ Deterministic (No Ollama)")
+                    self.model_status_label.configure(text_color="#38bdf8")
+                    if hasattr(self, "_engine_status_label"):
+                        self._engine_status_label.configure(
+                            text="⚡ Deterministic Mode Active · Rules & manual destinations operate offline without Ollama.",
+                            text_color="#38bdf8",
+                        )
+                else:
+                    client = ollama.Client(host=settings.ollama_host)
+                    client.list()
+                    self.model_status_var.set("🟢 Online · Gemma 4 AI Active")
+                    self.model_status_label.configure(text_color=COLOR_ACCENT_LIGHT)
+                    if hasattr(self, "_engine_status_label"):
+                        self._engine_status_label.configure(
+                            text="🤖 Gemma 4 AI Active · Generative prompt parsing & semantic classification enabled.",
+                            text_color=COLOR_ACCENT_LIGHT,
+                        )
             except Exception:
-                self.model_status_var.set("🔴 Offline (Cannot reach Ollama)")
-                self.model_status_label.configure(text_color="#f87171")
+                self.model_status_var.set("⚡ Active · Rule-Based Mode")
+                self.model_status_label.configure(text_color="#f59e0b")
+                if hasattr(self, "_engine_status_label"):
+                    self._engine_status_label.configure(
+                        text="⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline).",
+                        text_color="#f59e0b",
+                    )
 
             self.after(10000, self.check_model_status_thread)
 
@@ -1720,14 +1782,36 @@ class SortSenseApp(ctk.CTk):
 
             try:
                 analysis = analyze_document(document)
-            except OllamaUnavailableError:
-                reason = "AI service unavailable (Ollama offline)"
-                self.after(0, self._on_review, timestamp, filename, reason, path, "", filename)
-                return
-            except AnalysisParseError as exc:
-                reason = f"AI parse error: {exc}"
-                self.after(0, self._on_review, timestamp, filename, reason, path, "", filename)
-                return
+            except (OllamaUnavailableError, AnalysisParseError):
+                analysis = deterministic_analyze_document(document)
+
+            # Check saved rules first (works offline and online)
+            active_rules = self.rule_manager.get_all_rules(include_disabled=False)
+            match_result = self.rule_matcher.match(document, analysis, active_rules)
+            if match_result.matched_rule and not match_result.is_conflict:
+                resolved = self.destination_resolver.resolve(
+                    document=document,
+                    analysis=analysis,
+                    matched_rule=match_result.matched_rule,
+                )
+                target_dir = resolved.target_directory
+                dest_filename = resolved.target_filename
+                try:
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    record = self.safe_executor.execute_move(
+                        Path(path), target_dir, dest_filename, rule=match_result.matched_rule
+                    )
+                    self.after(
+                        0, self._on_organize,
+                        timestamp, filename,
+                        analysis.document_type, resolved.root_folder.name,
+                        analysis.confidence, str(target_dir),
+                        record.destination_path.name,
+                    )
+                    return
+                except Exception as move_exc:
+                    self.after(0, self._on_pipeline_error, timestamp, filename, str(move_exc))
+                    return
 
             validation = validate_analysis(document, analysis)
             decision = decide(analysis, validation, original_extension=ext)

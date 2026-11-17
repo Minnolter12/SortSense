@@ -162,7 +162,10 @@ class InstructionParser:
     def _call_ollama(self, instruction: str, client: object | None) -> ParsedInstructionSchema | None:
         """Call local Gemma via Ollama structured output."""
         if client is None:
-            import ollama
+            try:
+                import ollama
+            except ImportError:
+                return None
             client = ollama.Client(host=settings.ollama_host)
 
         schema = ParsedInstructionSchema.model_json_schema()
@@ -271,6 +274,18 @@ class InstructionParser:
             group_by = ["company", "year"]
         elif "by year" in lower:
             group_by = ["year"]
+
+        if not doc_types and not dest_root and not subjects:
+            return ParsedInstructionSchema(
+                rule_name="Uninterpreted Instruction",
+                is_ambiguous=True,
+                clarification_question=(
+                    "The offline deterministic parser could not reliably interpret this instruction. "
+                    "For natural-language reasoning, please start Ollama with Gemma 4 ('ollama run gemma4:e4b'). "
+                    "In offline mode, please specify clear criteria such as document types (e.g. 'invoices', 'exam papers') "
+                    "and a destination folder (e.g. 'into Examination Papers')."
+                ),
+            )
 
         rule_name = dest_root or (doc_types[0].title() if doc_types else "Custom Rule")
 

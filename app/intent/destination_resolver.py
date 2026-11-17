@@ -86,7 +86,10 @@ class DestinationResolver:
         if manual_destination_root and mode in (OrganizationMode.MANUAL_DESTINATION, OrganizationMode.HYBRID):
             root = manual_destination_root.expanduser().resolve()
             priority_tier = 1
-            explanation = f"Manual destination root selected: '{root.name}'."
+            if mode == OrganizationMode.MANUAL_DESTINATION:
+                explanation = f"Manual destination mode: routed directly to '{root.name}'."
+            else:
+                explanation = f"Manual destination root selected: '{root.name}'."
 
         # --- Priority 2: Matching saved user rule ---
         elif matched_rule and matched_rule.destination.root:

@@ -63,8 +63,8 @@ class OrganizationPlanner:
         if analyzer_func is not None:
             self._analyzer_func = analyzer_func
         else:
-            from app.analyzer import analyze_document
-            self._analyzer_func = analyze_document
+            from app.analyzer import safe_analyze_document
+            self._analyzer_func = safe_analyze_document
 
     def create_plan(
         self,
@@ -143,21 +143,24 @@ class OrganizationPlanner:
         if doc.extraction_status not in ("ok", "empty"):
             warnings.append(f"Text extraction issue: {doc.extraction_status}")
 
-        # 2. Semantic Analysis
+        # 2. Document Analysis (Ollama when available, deterministic evidence-based otherwise)
         analysis: DocumentAnalysis
-        try:
-            analysis = self._analyzer_func(doc)
-        except Exception as exc:
-            logger.warning("Analyzer error for %s: %s", path, exc)
-            analysis = DocumentAnalysis(
-                document_type="Unclassified",
-                category="General",
-                new_filename=path.name,
-                summary="Analysis could not be completed.",
-                confidence=0.1,
-                suggested_action="Review",
-            )
-            warnings.append(f"AI analysis unavailable: {exc}")
+        if mode == OrganizationMode.MANUAL_DESTINATION:
+            # Mode B is completely independent of AI; run quick deterministic analysis for metadata
+            # but never add warnings if AI/Ollama is offline
+            try:
+                analysis = self._analyzer_func(doc)
+            except Exception:
+                from app.analyzer import deterministic_analyze_document
+                analysis = deterministic_analyze_document(doc)
+        else:
+            try:
+                analysis = self._analyzer_func(doc)
+            except Exception as exc:
+                logger.warning("Analyzer error for %s: %s", path, exc)
+                from app.analyzer import deterministic_analyze_document
+                analysis = deterministic_analyze_document(doc)
+                warnings.append(f"AI service unavailable; evaluated using deterministic engine.")
 
         # 3. Deterministic Validation
         validation = validate_analysis(doc, analysis)
@@ -196,6 +199,9 @@ class OrganizationPlanner:
         if match_result.matched_rule:
             explanation = f"{match_result.explanation} {explanation}"
 
+        # In Mode B (Manual Destination), confidence reflects user explicit manual selection (1.0)
+        item_confidence = 1.0 if (mode == OrganizationMode.MANUAL_DESTINATION and manual_root) else analysis.confidence
+
         return OrganizationPlanItem(
             original_path=path,
             original_filename=path.name,
@@ -208,7 +214,7 @@ class OrganizationPlanner:
             matched_rule_name=matched_rule.rule_name if matched_rule else None,
             proposed_destination=resolved.target_directory,
             proposed_filename=resolved.target_filename,
-            confidence=analysis.confidence,
+            confidence=item_confidence,
             explanation=explanation.strip(),
             warnings=warnings,
             status=PlanItemStatus.PROPOSED,

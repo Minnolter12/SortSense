@@ -339,7 +339,7 @@ The demo covers: launching the app, dropping a test PDF into the watched directo
 - **[`customtkinter`](https://github.com/TomSchimansky/CustomTkinter) (MIT):** Modern Tkinter widgets — used to build the desktop dashboard.
 - **[`pydantic`](https://github.com/pydantic/pydantic) (MIT):** Data validation — used for all structured data models across the pipeline.
 - **[`ollama-python`](https://github.com/ollama/ollama-python) (MIT):** Python client for the local Ollama daemon.
-- **[`pytest`](https://github.com/pytest-dev/pytest) (MIT):** Test framework — 226 automated tests covering pipeline, intent rules, path safety, collisions, and rollback.
+- **[`pytest`](https://github.com/pytest-dev/pytest) (MIT):** Test framework — 240 automated tests covering pipeline, intent rules, path safety, offline fallback, and rollback.
 
 ## Setup and Usage
 
@@ -409,7 +409,7 @@ python -m app.gui
 
 ### Running the Test Suite
 
-The SortSense automated test suite contains **226 unit, integration, and security tests**. All tests are 100% deterministic and offline, using mocked LLM responses with zero cloud or live Ollama network dependencies.
+The SortSense automated test suite contains **240 unit, integration, and security tests**. All tests are 100% deterministic and offline, using mocked LLM responses with zero cloud or live Ollama network dependencies.
 
 ```bash
 # Run the entire test suite
@@ -424,6 +424,7 @@ pytest -v
 
 #### Test Suite Breakdown
 
+- **Offline & Zero-Ollama Usability (`tests/test_offline_mode.py`):** Uninstalled Ollama simulation (`ollama = None`), unreachable daemon failover, evidence-based confidence scoring, ambiguous file review isolation, Mode B manual independence, fast health-check cooldown, and end-to-end plan/execute/undo rollback.
 - **Natural Language Parsing & Rules (`tests/test_instruction_parser.py`, `tests/test_rule_manager.py`, `tests/test_rule_matcher.py`):** Structured rule extraction, invalid model outputs, ambiguous input clarification, atomic JSON persistence, and multi-factor rule matching.
 - **Intent Models & Configuration (`tests/test_intent_models.py`, `tests/test_config.py`):** Pydantic schemas, validation constraints, and configurable academic year calculation.
 - **Destination Intelligence & Organization Modes (`tests/test_destination_resolver.py`, `tests/test_modes_integration.py`):** Mode A (AI-Directed), Mode B (Manual Destination), Mode C (Hybrid), manual overrides, and 5-tier conflict resolution.
