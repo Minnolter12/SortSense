@@ -7,4 +7,5 @@ python-multipart
 pytest
 pytest-mock
 customtkinter
+pillow
 pyinstaller
