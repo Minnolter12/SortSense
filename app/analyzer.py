@@ -34,6 +34,7 @@ from pydantic import ValidationError
 
 from app.analysis_models import DocumentAnalysis
 from app.config import settings
+from app.topics import classify_topic, suggest_title
 
 if TYPE_CHECKING:
     from app.document import NormalizedDocument
@@ -77,6 +78,7 @@ class OllamaServiceManager:
     _is_model_ready: bool = False
     _available_models: list[str] = []
     _cooldown_seconds: float = 5.0  # Cache availability for 5 seconds
+    _last_request_error: str | None = None  # set when a real Gemma request failed
 
     @classmethod
     def reset(cls) -> None:
@@ -85,6 +87,16 @@ class OllamaServiceManager:
         cls._is_server_up = False
         cls._is_model_ready = False
         cls._available_models = []
+        cls._last_request_error = None
+
+    @classmethod
+    def mark_request_failed(cls, error: str) -> None:
+        """Remember that a real inference request failed (for honest status display)."""
+        cls._last_request_error = error
+
+    @classmethod
+    def mark_request_ok(cls) -> None:
+        cls._last_request_error = None
 
     @classmethod
     def mark_offline(cls) -> None:
@@ -159,6 +171,24 @@ class OllamaServiceManager:
         return False, False, f"Ollama service unreachable at {host}."
 
     @classmethod
+    def engine_state(cls) -> tuple[str, str]:
+        """
+        Honest engine status as (key, human label). Keys:
+        gemma_active | model_missing | ollama_unavailable | deterministic | request_failed
+        Never reports gemma_active merely because a model name is configured.
+        """
+        if not OLLAMA_INSTALLED or ollama is None:
+            return "deterministic", "Deterministic Mode (Ollama not installed)"
+        server_up, model_ready, _msg = cls.check_service_status()
+        if not server_up:
+            return "ollama_unavailable", "Ollama Unavailable - using Deterministic Mode"
+        if not model_ready:
+            return "model_missing", f"Ollama Available / Model Missing ({settings.gemma_model})"
+        if cls._last_request_error:
+            return "request_failed", "Model Request Failed - using Deterministic Mode"
+        return "gemma_active", f"Gemma AI Active ({settings.gemma_model})"
+
+    @classmethod
     def is_available(cls, timeout: float = 0.5) -> bool:
         """
         Check if Ollama service is reachable and the configured model is available.
@@ -191,7 +221,7 @@ def _make_client() -> ollama.Client:
     """Create an Ollama client pointed at the configured host."""
     if not OLLAMA_INSTALLED or ollama is None:
         raise OllamaUnavailableError("The 'ollama' Python library is not installed.")
-    return ollama.Client(host=settings.ollama_host)
+    return ollama.Client(host=settings.ollama_host, timeout=settings.ollama_timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +399,7 @@ def deterministic_analyze_document(document: "NormalizedDocument") -> DocumentAn
     if sem_match:
         detected_semester = sem_match.group(1).title()
 
-    # Evidence-based confidence calculation
+    # Evidence-based confidence calculation (document-type evidence)
     if not has_text and best_score == 0.0:
         confidence = 0.10
         suggested_action = "Review"
@@ -385,18 +415,43 @@ def deterministic_analyze_document(document: "NormalizedDocument") -> DocumentAn
         best_type = "Unclassified"
         best_category = "General"
     else:
-        # Normal evidence score
         confidence = min(0.90, max(0.20, round(best_score, 2)))
-        # Ambiguous documents (< 0.70) must go to Review Queue
         suggested_action = "Organize (Deterministic)" if confidence >= 0.70 else "Review"
 
-    # Deterministic safe filename
+    # Subject/topic evidence from the document CONTENT (see app/topics.py).
+    # A clearly established document type (invoice, question paper...) keeps its
+    # own category; otherwise a well-evidenced subject decides the folder.
+    evidence: list[str] = []
+    topic = classify_topic(document.text, document.file_name) if has_text else None
+    type_established = best_score >= 0.70 and has_text
+    if topic and topic.subject:
+        detected_subject = topic.subject
+        evidence.extend(topic.reasons)
+        if not type_established:
+            best_category = topic.subject
+            if best_type == "Unclassified":
+                best_type = "Study Material"
+            confidence = max(confidence if best_score >= 0.7 else 0.0, topic.confidence)
+            suggested_action = "Organize (Deterministic)" if confidence >= 0.70 else "Review"
+    elif has_text and best_score == 0.0:
+        evidence.append("No subject or document-type evidence found in the extracted text")
+    if not has_text:
+        evidence.append(f"No usable text extracted (status: {document.extraction_status}); original name kept")
+    if best_score > 0:
+        evidence.append(f"Document-type evidence: {best_type} ({best_score:.2f})")
+
+    # Safe filename: prefer a title taken from the content; never invent one.
     ext = document.extension.lstrip(".")
     stem = re.sub(r"[^\w\s-]", "", document.file_name.rsplit(".", 1)[0]).strip().replace(" ", "_")
-    if detected_subject and best_type != "Unclassified":
+    title = suggest_title(document.text, detected_subject) if has_text else None
+    if topic and topic.subject and not type_established and title:
+        new_filename = f"{title}.{ext}" if ext else title
+    elif detected_subject and best_type != "Unclassified":
         new_filename = f"{detected_subject}_{best_type.title()}_{stem[:30]}.{ext}"
     else:
         new_filename = f"{stem}.{ext}" if stem else document.file_name
+        if not ext and "." not in new_filename:
+            new_filename = document.file_name
 
     summary = (
         f"[Deterministic Engine] Identified as {best_type} ({best_category}) "
@@ -414,6 +469,8 @@ def deterministic_analyze_document(document: "NormalizedDocument") -> DocumentAn
         academic_year=detected_academic_year or detected_year,
         semester=detected_semester,
         document_date=detected_year,
+        evidence=evidence,
+        source="deterministic",
     )
 
 
@@ -428,7 +485,7 @@ def safe_analyze_document(document: "NormalizedDocument") -> DocumentAnalysis:
 
     try:
         return analyze_document(document)
-    except (OllamaUnavailableError, AnalysisParseError) as exc:
+    except Exception as exc:  # any Gemma failure must degrade to deterministic, never crash
         logger.warning(
             "Ollama error for '%s' (%s); marking offline and using deterministic fallback",
             document.file_name,
@@ -486,6 +543,7 @@ def analyze_document(
         )
     except Exception as exc:
         OllamaServiceManager.mark_offline()
+        OllamaServiceManager.mark_request_failed(str(exc))
         if fallback_on_error:
             logger.info("Ollama failed; using deterministic fallback for '%s': %s", document.file_name, exc)
             return deterministic_analyze_document(document)
@@ -496,6 +554,7 @@ def analyze_document(
     raw_content: str = response.message.content or ""
 
     if not raw_content.strip():
+        OllamaServiceManager.mark_request_failed("empty response")
         if fallback_on_error:
             return deterministic_analyze_document(document)
         raise AnalysisParseError("Gemma returned an empty response.")
@@ -503,12 +562,15 @@ def analyze_document(
     try:
         analysis = DocumentAnalysis.model_validate_json(raw_content)
     except ValidationError as exc:
+        OllamaServiceManager.mark_request_failed("invalid response")
         if fallback_on_error:
             return deterministic_analyze_document(document)
         raise AnalysisParseError(
             f"Gemma response failed schema validation:\n{exc}"
         ) from exc
 
+    OllamaServiceManager.mark_request_ok()
+    analysis = analysis.model_copy(update={"source": "gemma"})
     logger.info(
         "Analysis complete — type=%s confidence=%.2f",
         analysis.document_type,
