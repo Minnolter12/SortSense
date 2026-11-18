@@ -249,13 +249,27 @@ _DETERMINISTIC_TYPE_PATTERNS = [
         ["assignment", "homework", "lab task", "exercise"],
     ),
     (
+        "circular",
+        "Circulars",
+        [
+            "official circular", "university circular", "academic circular",
+            "advisory and circular", "office of the registrar",
+            "office of the dean", "notification ref", "circular no",
+            "circular ref", "notice for the attention", "academic section",
+            "rescheduling of", "practical examinations", "scholarship renewal",
+            "hostel fee payment notice", "course registration guidelines",
+        ],
+        ["circular", "notification", "notice", "advisory", "announcement"],
+    ),
+    (
         "invoice",
         "Finance",
         [
             "tax invoice", "invoice no", "invoice number", "bill to",
             "amount due", "payment due", "total amount", "receipt for",
+            "payment receipt", "fee receipt", "total amount paid",
         ],
-        ["invoice", "receipt", "billing", "billed to"],
+        ["invoice", "receipt", "billing", "billed to", "fees", "fee payment"],
     ),
     (
         "financial_statement",
@@ -357,9 +371,11 @@ def deterministic_analyze_document(document: "NormalizedDocument") -> DocumentAn
             score += 0.25
 
         if txt_strong:
-            score += 0.40
+            txt_strong_count = sum(1 for p in strong_phrases if p in text_sample) if has_text else 0
+            score += min(0.85, 0.50 + 0.15 * max(0, txt_strong_count - 1))
         elif txt_kw:
-            score += 0.20
+            txt_kw_count = sum(1 for k in keywords if k in text_sample) if has_text else 0
+            score += min(0.50, 0.20 + 0.10 * max(0, txt_kw_count - 1))
 
         # Corroboration bonus: signal exists in both filename and text
         if (fn_strong or fn_kw) and (txt_strong or txt_kw):
@@ -444,8 +460,11 @@ def deterministic_analyze_document(document: "NormalizedDocument") -> DocumentAn
     ext = document.extension.lstrip(".")
     stem = re.sub(r"[^\w\s-]", "", document.file_name.rsplit(".", 1)[0]).strip().replace(" ", "_")
     title = suggest_title(document.text, detected_subject) if has_text else None
-    if topic and topic.subject and not type_established and title:
-        new_filename = f"{title}.{ext}" if ext else title
+    if title:
+        if detected_subject and detected_subject.lower() not in title.lower():
+            new_filename = f"{detected_subject}_{title}.{ext}" if ext else f"{detected_subject}_{title}"
+        else:
+            new_filename = f"{title}.{ext}" if ext else title
     elif detected_subject and best_type != "Unclassified":
         new_filename = f"{detected_subject}_{best_type.title()}_{stem[:30]}.{ext}"
     else:
@@ -570,7 +589,9 @@ def analyze_document(
         ) from exc
 
     OllamaServiceManager.mark_request_ok()
-    analysis = analysis.model_copy(update={"source": "gemma"})
+    from app.proposals import clean_filename
+    normalized_name = clean_filename(analysis.new_filename, document.file_name)
+    analysis = analysis.model_copy(update={"source": "gemma", "new_filename": normalized_name})
     logger.info(
         "Analysis complete — type=%s confidence=%.2f",
         analysis.document_type,

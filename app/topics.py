@@ -93,7 +93,7 @@ _COMPILED: dict[str, list[tuple[str, int, re.Pattern[str]]]] = {
     for subj, terms in _LEXICON.items()
 }
 
-_TITLE_LINE_RE = re.compile(r"^\s*(?:topic|title|chapter|unit|module|lesson|subject)\s*[:\-–]\s*(.+?)\s*$", re.I)
+_TITLE_LINE_RE = re.compile(r"^\s*(?:topic|title|chapter|unit|module|lesson|subject|course|notification|circular|invoice|bill)\s*[:\-–]\s*(.+?)\s*$", re.I)
 
 
 @dataclass(frozen=True)
@@ -158,14 +158,19 @@ def classify_topic(text: str, filename: str = "") -> TopicResult:
 def suggest_title(text: str, subject: str | None = None) -> str | None:
     """Pick a concise human title from the document content (no filename hardcoding)."""
     lines = _lines(text[:3000])
-    for ln in lines[:12]:
+    for ln in lines[:15]:
         m = _TITLE_LINE_RE.match(ln)
         if m:
             return _clean_title(m.group(1))
-    for ln in lines[:6]:
+    for ln in lines[:8]:
         md = re.match(r"^#{1,3}\s+(.+)$", ln)
         if md:
             return _clean_title(md.group(1))
+    for ln in lines[:8]:
+        if re.search(r"\b(tax invoice|invoice|payment receipt|fee receipt|circular|notification|examination paper|question paper|lecture notes|study material)\b", ln, re.I):
+            ct = _clean_title(ln)
+            if ct:
+                return ct
     if lines:
         first = lines[0]
         if 3 <= len(first) <= 80 and not first.endswith((".", ",", ";")):

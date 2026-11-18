@@ -229,3 +229,48 @@ class TestAnalyzeDocument:
             mock_client_factory.return_value.chat.side_effect = _ollama.ResponseError("model not found")
             with pytest.raises(OllamaUnavailableError):
                 analyze_document(sample_document)
+
+    def test_deterministic_circular_and_invoice_renaming(self):
+        from app.analyzer import deterministic_analyze_document
+
+        circular_doc = NormalizedDocument(
+            file_path="/tmp/DOC-20241118-WA0088.txt",
+            file_name="DOC-20241118-WA0088.txt",
+            extension="txt",
+            content_type="text/plain",
+            extraction_status="ok",
+            page_count=1,
+            character_count=200,
+            text=(
+                "OFFICE OF THE REGISTRAR - ACADEMIC SECTION\n"
+                "OFFICIAL UNIVERSITY CIRCULAR & NOTIFICATION\n"
+                "SUBJECT: RESCHEDULING OF WINTER SEMESTER PRACTICAL EXAMINATIONS\n"
+                "Date: 18 November 2024\n"
+            ),
+        )
+        res = deterministic_analyze_document(circular_doc)
+        assert res.document_type == "circular"
+        assert res.category == "Circulars"
+        assert res.confidence >= 0.85
+        assert "Rescheduling" in res.new_filename
+
+        invoice_doc = NormalizedDocument(
+            file_path="/tmp/INV_2024_Online_Receipt_WA99.txt",
+            file_name="INV_2024_Online_Receipt_WA99.txt",
+            extension="txt",
+            content_type="text/plain",
+            extraction_status="ok",
+            page_count=1,
+            character_count=200,
+            text=(
+                "TAX INVOICE & PAYMENT RECEIPT\n"
+                "INVOICE NUMBER: INV-2024-88419\n"
+                "TOTAL AMOUNT PAID: INR 63,720.00\n"
+                "Bill to: Student Name\n"
+            ),
+        )
+        inv_res = deterministic_analyze_document(invoice_doc)
+        assert inv_res.document_type == "invoice"
+        assert inv_res.category == "Finance"
+        assert inv_res.confidence >= 0.85
+        assert "Tax_Invoice" in inv_res.new_filename

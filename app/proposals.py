@@ -48,6 +48,9 @@ def clean_filename(raw: str, original_name: str) -> str:
     base = (raw or "").strip()
     if ext and base.lower().endswith(ext.lower()):
         base = base[: -len(ext)]
+    for other_ext in [".pdf", ".txt", ".md", ".docx", ".doc"]:
+        if base.lower().endswith(other_ext):
+            base = base[: -len(other_ext)]
     base = _ILLEGAL.sub("", base.replace("..", ""))
     base = re.sub(r"\s+", "_", base).strip("._ ")[:_MAX_STEM].rstrip("._ ")
     if not base or base.upper() in {"CON", "PRN", "AUX", "NUL"}:
@@ -124,14 +127,14 @@ def build_proposal(
                             analysis.confidence, evidence, warnings, engine)
     else:
         category = clean_folder_name(analysis.category, "Unsorted")
-        name = clean_filename(analysis.new_filename, source.name) if val.valid or not any(
-            "new_filename" in i for i in val.issues) else source.name
+        name = clean_filename(analysis.new_filename, source.name)
         proposal = Proposal(source, source.name, name, category, base / category,
                             analysis.confidence, evidence, warnings, engine)
 
+    critical_issues = [i for i in val.issues if not ("does not end with correct extension" in i)]
     if analysis.confidence < thr:
         proposal.warnings.append(f"Confidence {analysis.confidence:.2f} is below the review threshold {thr:.2f}.")
-    proposal.needs_review = bool(val.issues) or analysis.confidence < thr or proposal.destination_dir is None
+    proposal.needs_review = bool(critical_issues) or analysis.confidence < thr or proposal.destination_dir is None
     if proposal.destination_dir is not None and (proposal.destination_dir / proposal.proposed_name).exists():
         proposal.warnings.append("A file with this name already exists there; a numbered copy will be created.")
     return proposal
