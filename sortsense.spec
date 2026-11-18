@@ -26,7 +26,11 @@ hidden_imports = (
     collect_submodules('customtkinter')
     + collect_submodules('watchdog')
     + collect_submodules('app.intent')
+    + collect_submodules('ollama')
     + [
+        'ollama',
+        'httpx',
+        'httpcore',
         'pypdf',
         'pymupdf',
         'fitz',
@@ -45,8 +49,6 @@ excludes = [
     'fastapi',
     'uvicorn',
     'starlette',
-    'httpx',
-    'httpcore',
     'torch',
     'torchvision',
     'torchaudio',
