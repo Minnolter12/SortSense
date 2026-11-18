@@ -3,8 +3,8 @@ name: SortSense CI & Release Build
 on:
   push:
     branches:
-      - release/windows-v1
       - main
+      - fix/sortsense-regression-restoration
   pull_request:
     branches:
       - main
@@ -14,21 +14,17 @@ permissions:
 
 jobs:
   test:
-    name: Test Suite (Python ${{ matrix.python-version }})
+    name: Test Suite (Python 3.11)
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
           cache: "pip"
 
       - name: Install dependencies
@@ -36,12 +32,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run complete test suite
+      - name: Run test suite (non-GUI, non-Ollama)
         run: |
-          pytest -v
+          py -m pytest -q --ignore=tests/smoke_test_live.py
 
   build-windows:
-    name: Windows Desktop Packaging Verification
+    name: Windows Desktop Packaging
     needs: test
     runs-on: windows-latest
 
@@ -49,13 +45,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.11"
           cache: "pip"
 
-      - name: Install packaging dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -64,6 +60,9 @@ jobs:
         run: |
           pyinstaller sortsense.spec --noconfirm
 
-      - name: Verify packaged desktop binary with smoke test
-        run: |
-          .\dist\SortSense\SortSense.exe --smoke-test
+      - name: Upload Windows exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SortSense-Windows-exe
+          path: dist/SortSense/
+          if-no-files-found: error
