@@ -1,0 +1,5 @@
+ALGORITHM ANALYSIS
+Topic: Sorting Algorithms
+Merge Sort divides an array, sorts each half, and merges the results. Its time
+complexity is O(n log n) in best, average, and worst cases. Quick Sort partitions
+around a pivot; average time is O(n log n), while worst case is O(n squared).

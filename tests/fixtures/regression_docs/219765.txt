@@ -1,0 +1,5 @@
+DISCRETE MATHEMATICS
+Topic: Graph Theory and Trees
+A graph consists of vertices and edges. A tree is a connected acyclic graph.
+For a tree with n vertices, the number of edges is n - 1. Review degree,
+paths, cycles, connectedness, and spanning trees.

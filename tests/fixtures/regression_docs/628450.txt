@@ -1,0 +1,5 @@
+JAVA OOPS - ABSTRACTION
+Topic: Abstract Classes and Interfaces
+Abstraction exposes essential behavior while hiding implementation details.
+An abstract class may contain abstract and concrete methods. An interface
+defines a contract that implementing classes agree to follow.

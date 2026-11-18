@@ -119,22 +119,21 @@ class TestPackagingLifecycle:
             confidence=0.45,
             suggested_action="Review"
         )
-        # Ingestion produces valid document
-        from app.ingestion import ingest_file
-        norm_doc = ingest_file(str(doc_file))
-
+        app._inflight = set()
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("app.gui.ingest_file", lambda p: norm_doc)
-            mp.setattr("app.gui.analyze_document", lambda d: low_conf_analysis)
+            mp.setattr("app.pipeline.safe_analyze_document", lambda d: low_conf_analysis)
+            mp.setattr("app.pipeline.wait_until_stable", lambda *a, **k: True)
             app._run_pipeline(event)
 
-        # Must call _on_review, NEVER execute_move!
+        # Nothing may move: the file becomes a PROPOSAL flagged for review, never execute_move.
         app.safe_executor.execute_move.assert_not_called()
         app.executor.execute_move.assert_not_called()
-        assert app.after.call_count >= 1
-        # Check that one of the self.after calls dispatched _on_review
-        review_dispatched = any(call_args[0][1] == app._on_review for call_args in app.after.call_args_list)
-        assert review_dispatched, "Low-confidence document did not get routed to _on_review"
+        assert doc_file.exists()
+        proposal_calls = [c for c in app.after.call_args_list if c[0][1] == app._on_proposal]
+        assert proposal_calls, "Low-confidence document did not produce a proposal"
+        proposal = proposal_calls[0][0][3]
+        assert proposal.needs_review is True
+        assert proposal.status == "pending"
 
     def test_smoke_test_does_not_modify_user_home_sortsense(self, tmp_path, monkeypatch):
         from sortsense import run_smoke_test

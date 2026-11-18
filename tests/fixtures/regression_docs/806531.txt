@@ -1,0 +1,5 @@
+DISCRETE MATHEMATICS - SET THEORY
+Topic: Sets, Relations, and Functions
+A set is a collection of distinct elements. A relation from A to B is a subset
+of the Cartesian product A x B. A function assigns exactly one output to each
+input in its domain. Review reflexive, symmetric, antisymmetric, and transitive.
