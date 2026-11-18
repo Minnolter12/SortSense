@@ -138,9 +138,17 @@ def _build_filename(analysis: "DocumentAnalysis", original_extension: str) -> st
     Uses the document_type as the primary stem source because it is short
     and deterministic; falls back to a sanitised slice of the summary.
     """
+    ext = original_extension.lstrip(".")
+    # Prefer the analyzer's content-based filename (REGRESSION FIX: it used to be
+    # discarded and every file was renamed after its document_type, e.g. "Unclassified.txt").
+    proposed = analysis.new_filename.strip()
+    if proposed and not any(c in proposed for c in ("/", "\\", "\0")):
+        proposed_stem = proposed.rsplit(".", 1)[0] if "." in proposed else proposed
+        stem = _safe_stem(proposed_stem)
+        if stem != "document" or proposed_stem.lower() == "document":
+            return f"{stem}.{ext}" if ext else stem
     raw = analysis.document_type.strip() or analysis.summary.strip() or "document"
     stem = _safe_stem(raw)
-    ext = original_extension.lstrip(".")
     return f"{stem}.{ext}" if ext else stem
 
 

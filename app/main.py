@@ -22,7 +22,7 @@ def print_banner() -> None:
     print("=" * 50)
     print("  FileMind \u2014 local AI file intelligence")
     print("=" * 50)
-    print(f"  Watched directory    : {settings.watched_dir}")
+    print(f"  Watched directories  : {', '.join(str(d) for d in settings.watched_dirs)}")
     print(f"  Ollama host          : {settings.ollama_host}")
     print(f"  Gemma model          : {settings.gemma_model}")
     print(f"  Confidence threshold : {settings.confidence_threshold}")
@@ -41,39 +41,19 @@ def start_watcher_blocking() -> None:
 
     from app.events import FileEvent
     from app.watcher import start_watcher
-    from app.ingestion import ingest_file
-    from app.analyzer import analyze_document
-    from app.validation import validate_analysis
-    from app.routing import route_file
+    from app.pipeline import process_file
 
     def on_event(event: FileEvent) -> None:
+        # CLI mode only REPORTS suggestions. Files are never moved without approval
+        # (use the desktop app's Review Queue to approve and execute).
         print(f"\n[watcher] Detected new file: {event.path}")
-        
-        # Wait a moment for file write to finish
-        time.sleep(1.0)
-        
-        doc = ingest_file(event.path)
-        if doc.extraction_status not in ("ok", "empty"):
-            print(f"[ingest] Skipping file ({doc.extraction_status}): {event.path}")
+        proposal = process_file(event.path)
+        if proposal is None:
+            print("[skip] unsupported, incomplete or unreadable file")
             return
-            
-        print(f"[ingest] Extracted {doc.character_count} chars from {doc.file_name}")
-        
-        try:
-            analysis = analyze_document(doc)
-            print(f"[analyze] Classified as: {analysis.category} -> {analysis.new_filename}")
-        except Exception as e:
-            print(f"[analyze] Failed: {e}")
-            return
-            
-        val_result = validate_analysis(doc, analysis)
-        if not val_result.valid or analysis.confidence < settings.confidence_threshold:
-            print(f"[validate] Needs Review (Confidence {analysis.confidence:.2f}): {val_result.issues}")
-            return
-            
-        new_path = route_file(doc, analysis)
-        if new_path:
-            print(f"[route] Moved to: {new_path}")
+        dest = proposal.destination_dir or "(choose a destination)"
+        print(f"[suggest] {proposal.original_name} -> {dest}/{proposal.proposed_name} "
+              f"(confidence {proposal.confidence:.2f}, {proposal.engine})")
 
     observer = start_watcher(on_event=on_event)
     print("Watching the following directories (Ctrl-C to stop):")

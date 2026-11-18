@@ -5,7 +5,7 @@ Architecture:
   watcher thread  →  FileEvent
                  →  self.after(0, _dispatch_event)   [marshal to Tk thread]
                  →  threading.Thread(_run_pipeline)   [off Tk thread: IO + Ollama]
-                 →  self.after(0, _on_organize | _on_review | _on_pipeline_error)
+                 →  self.after(0, _on_proposal | _on_pipeline_error)   [proposal only - never moves files]
                                                       [marshal result to Tk thread]
 """
 
@@ -22,6 +22,8 @@ import customtkinter as ctk
 from app.config import settings
 from app.events import FileEvent
 from app.watcher import start_watcher
+from app.pipeline import process_file
+from app.proposals import APPROVED, EXECUTED, FAILED, PENDING, REJECTED, ProposalManager
 
 # ---------------------------------------------------------------------------
 # Pipeline imports — all pipeline errors must be caught locally so the GUI
@@ -153,6 +155,8 @@ class SortSenseApp(ctk.CTk):
         self.rule_matcher = self.planner.rule_matcher
         self.destination_resolver = self.planner.destination_resolver
         self.safe_executor = self.executor
+        self.proposals = ProposalManager(self.safe_executor, base_dir=settings.sorted_base_dir)
+        self._inflight: set[str] = set()  # paths currently being analysed (dedupes watcher events)
 
         self._current_plan: OrganizationPlan | None = None
         self._intent_mode_var = ctk.StringVar(value="Hybrid")
@@ -807,12 +811,21 @@ class SortSenseApp(ctk.CTk):
 
         desc = ctk.CTkLabel(
             header_frame,
-            text="These files had low confidence or validation issues and require manual sorting.",
+            text="SortSense suggests a name and folder for each file. Edit anything, then approve. Nothing moves until you click Execute Approved.",
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
         )
         desc.pack(anchor="w", pady=(2, 0))
+
+        bar = ctk.CTkFrame(frame, fg_color="transparent")
+        bar.grid(row=1, column=0, padx=28, pady=(0, 4), sticky="ew")
+        ctk.CTkButton(bar, text="Approve all ready", width=140, height=32, corner_radius=8,
+                      fg_color=COLOR_BUTTON_SECONDARY, hover_color=COLOR_BUTTON_SECONDARY_HOVER,
+                      command=self._approve_all_proposals).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(bar, text="Execute Approved", width=150, height=32, corner_radius=8,
+                      fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER,
+                      command=self._execute_approved_proposals).pack(side="left")
 
         self._review_scroll = ctk.CTkScrollableFrame(
             frame,
@@ -1838,38 +1851,21 @@ class SortSenseApp(ctk.CTk):
         def check_status():
             if getattr(self, "_is_shutting_down", False):
                 return
+            colors = {"gemma_active": COLOR_ACCENT_LIGHT, "model_missing": "#f59e0b", "ollama_unavailable": "#f59e0b",
+                      "deterministic": "#38bdf8", "request_failed": "#f87171"}
             try:
-                try:
-                    import ollama
-                    _ollama_installed = True
-                except ImportError:
-                    _ollama_installed = False
-
-                if not _ollama_installed:
-                    status_text = "⚡ Deterministic (No Ollama)"
-                    label_color = "#38bdf8"
-                    engine_text = "⚡ Deterministic Mode Active · Rules & manual destinations operate offline without Ollama."
-                else:
-                    from app.analyzer import OllamaServiceManager
-                    is_server_up, is_model_ready, msg = OllamaServiceManager.check_service_status(
-                        model_name=settings.gemma_model
-                    )
-                    if not is_server_up:
-                        status_text = "⚡ Active · Rule-Based Mode"
-                        label_color = "#f59e0b"
-                        engine_text = "⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline)."
-                    elif not is_model_ready:
-                        status_text = f"⚠️ Model Missing ({settings.gemma_model})"
-                        label_color = "#f59e0b"
-                        engine_text = f"⚠️ Ollama is running, but '{settings.gemma_model}' is not pulled. Run 'ollama pull {settings.gemma_model}' to activate AI."
-                    else:
-                        status_text = "🟢 Online · Gemma 4 AI Active"
-                        label_color = COLOR_ACCENT_LIGHT
-                        engine_text = f"🤖 {settings.gemma_model} AI Active · Generative prompt parsing & semantic classification enabled."
+                from app.analyzer import OllamaServiceManager
+                key, label = OllamaServiceManager.engine_state()
             except Exception:
-                status_text = "⚡ Active · Rule-Based Mode"
-                label_color = "#f59e0b"
-                engine_text = "⚡ Deterministic Mode Active · Rules & manual destinations are fully functional. (Ollama offline)."
+                key, label = "deterministic", "Deterministic Mode"
+            label_color = colors.get(key, "#38bdf8")
+            status_text = label
+            if key == "gemma_active":
+                engine_text = f"{label} - semantic classification and instruction parsing enabled."
+            elif key == "model_missing":
+                engine_text = f"Ollama is running but '{settings.gemma_model}' is not pulled. Run: ollama pull {settings.gemma_model}. Deterministic mode is active meanwhile."
+            else:
+                engine_text = f"{label}. Content-based rules, suggestions and manual destinations work fully offline."
 
             if getattr(self, "_is_shutting_down", False):
                 return
@@ -1906,154 +1902,63 @@ class SortSenseApp(ctk.CTk):
             return
 
         if not _PIPELINE_AVAILABLE:
-            self._log_raw(f"[{timestamp}] Pipeline unavailable — skipping {event.file_name}\n")
+            self._log_raw(f"[{timestamp}] Pipeline unavailable - skipping {event.file_name}\n")
             return
 
-        threading.Thread(
-            target=self._run_pipeline,
-            args=(event,),
-            daemon=True,
-        ).start()
+        key = str(event.path)
+        if key in self._inflight:  # duplicate watcher event for a file already being analysed
+            return
+        self._inflight.add(key)
+        threading.Thread(target=self._run_pipeline, args=(event,), daemon=True).start()
+
+    def _rule_override(self, document, analysis):
+        """Saved-rule hook (worker thread; read-only). Returns (dest_dir, filename, rule_name) or None."""
+        rules = self.rule_manager.get_all_rules(include_disabled=False)
+        match = self.rule_matcher.match(document, analysis, rules)
+        if match.matched_rule and not match.is_conflict:
+            resolved = self.destination_resolver.resolve(
+                document=document, analysis=analysis, matched_rule=match.matched_rule)
+            return resolved.target_directory, resolved.target_filename, match.matched_rule.rule_name
+        return None
 
     def _run_pipeline(self, event: FileEvent):
-        """Full pipeline for a single FileEvent. All UI updates via self.after()."""
+        """Worker thread: analyse one file and hand a PROPOSAL to the Tk thread. Never moves files."""
         path = str(event.path)
         filename = event.file_name
         timestamp = event.timestamp.strftime("%H:%M:%S")
-        ext = Path(event.path).suffix.lower().lstrip(".")
-
         try:
-            document = ingest_file(path)
-
-            if document.extraction_status not in ("ok", "empty"):
-                reason = f"Ingestion failed: {document.extraction_status}"
-                self.after(0, self._on_review, timestamp, filename, reason, path, "", filename)
-                return
-
-            try:
-                analysis = analyze_document(document)
-            except (OllamaUnavailableError, AnalysisParseError):
-                analysis = deterministic_analyze_document(document)
-
-            # Check saved rules first (works offline and online)
-            active_rules = self.rule_manager.get_all_rules(include_disabled=False)
-            match_result = self.rule_matcher.match(document, analysis, active_rules)
-            if match_result.matched_rule and not match_result.is_conflict:
-                resolved = self.destination_resolver.resolve(
-                    document=document,
-                    analysis=analysis,
-                    matched_rule=match_result.matched_rule,
-                )
-                target_dir = resolved.target_directory
-                dest_filename = resolved.target_filename
-
-                # Low-confidence documents must NOT bypass human review/approval safeguards
-                min_required_conf = max(match_result.matched_rule.conditions.min_confidence, settings.confidence_threshold)
-                if analysis.confidence < min_required_conf:
-                    reason = f"Low confidence ({analysis.confidence:.0%} < {min_required_conf:.0%}) despite matching rule '{match_result.matched_rule.rule_name}'"
-                    self.after(0, self._on_review, timestamp, filename, reason,
-                               path, str(target_dir), dest_filename)
-                    return
-
-                try:
-                    target_dir.mkdir(parents=True, exist_ok=True)
-                    record = self.safe_executor.execute_move(
-                        Path(path), target_dir, dest_filename, rule=match_result.matched_rule
-                    )
-                    root_name = resolved.root_folder.name if resolved.root_folder else "Organized"
-                    self.after(
-                        0, self._on_organize,
-                        timestamp, filename,
-                        analysis.document_type, root_name,
-                        analysis.confidence, str(target_dir),
-                        Path(record.destination_path).name,
-                    )
-                    return
-                except Exception as move_exc:
-                    self.after(0, self._on_pipeline_error, timestamp, filename, str(move_exc))
-                    return
-
-            validation = validate_analysis(document, analysis)
-            decision = decide(analysis, validation, original_extension=ext)
-
-            if decision.action == "organize":
-                # Smart folder: find existing matching folder or create new one
-                base = settings.sorted_base_dir
-                existing = _find_existing_category_folder(base, analysis.category)
-                target_dir = existing if existing else (base / analysis.category)
-
-                try:
-                    dest = _safe_move(Path(path), target_dir, analysis.new_filename)
-                    self.after(
-                        0, self._on_organize,
-                        timestamp, filename,
-                        analysis.document_type, analysis.category,
-                        analysis.confidence, str(target_dir),
-                        dest.name,
-                    )
-                except Exception as move_exc:
-                    self.after(0, self._on_pipeline_error, timestamp, filename, str(move_exc))
+            proposal = process_file(path, base_dir=settings.sorted_base_dir, rule_hook=self._rule_override)
+            if proposal is None:
+                self.after(0, self._log_raw, f"[{timestamp}] Skipped (incomplete or unreadable): {filename}\n")
             else:
-                reason = decision.reason
-                suggested_dir = str(settings.sorted_base_dir / analysis.category)
-                self.after(0, self._on_review, timestamp, filename, reason,
-                           path, suggested_dir, decision.suggested_filename)
-
+                self.after(0, self._on_proposal, timestamp, proposal)
         except Exception as exc:
             self.after(0, self._on_pipeline_error, timestamp, filename, str(exc))
+        finally:
+            self.after(0, self._inflight.discard, path)
 
-    def _on_organize(
-        self,
-        timestamp: str,
-        filename: str,
-        doc_type: str,
-        category: str,
-        confidence: float,
-        destination: str,
-        new_filename: str,
-    ):
-        """Called on Tk thread when a file is successfully moved and renamed."""
-        self._processed_count += 1
+    def _update_counters(self):
+        """Dashboard counters reflect real state: pending = awaiting approval/execution, processed = executed."""
+        counts = self.proposals.counts()
+        self._pending_count = counts[PENDING] + counts[APPROVED]
+        self._pending_var.set(str(self._pending_count))
         self._processed_var.set(str(self._processed_count))
 
-        line = (
-            f"• {timestamp} — ✅ {filename}\n"
-            f"  Type: {doc_type} | Category: {category} | "
-            f"Confidence: {confidence:.0%}\n"
-            f"  Renamed → {new_filename}\n"
-            f"  Moved to → {destination}\n"
+    def _on_proposal(self, timestamp: str, proposal):
+        """Tk thread: a new suggestion is waiting for the user."""
+        self.proposals.add(proposal)
+        dest = proposal.destination_dir if proposal.destination_dir else "(you choose)"
+        self._activity_lines.insert(
+            0,
+            f"- {timestamp} - Suggestion: {proposal.original_name}\n"
+            f"  -> {proposal.proposed_name} | {proposal.category} | confidence {proposal.confidence:.0%} "
+            f"({proposal.engine})\n  Awaiting your approval\n",
         )
-        self._activity_lines.insert(0, line)
-
-        self._refresh_dashboard_activity()
-        self._log_raw(
-            f"[{timestamp}] ORGANIZED: {filename} → {destination}/{new_filename} "
-            f"(conf={confidence:.0%})\n"
-        )
-
-    def _on_review(
-        self,
-        timestamp: str,
-        filename: str,
-        reason: str,
-        src_path: str = "",
-        suggested_dir: str = "",
-        suggested_name: str = "",
-    ):
-        """Called on Tk thread when a file needs human review."""
-        self._pending_count += 1
-        self._pending_var.set(str(self._pending_count))
-
-        activity_line = (
-            f"• {timestamp} — ⚠️  {filename} → Review Queue\n"
-            f"  Reason: {reason}\n"
-        )
-        self._activity_lines.insert(0, activity_line)
-
-        self._review_items.append((filename, reason, src_path, suggested_dir, suggested_name))
+        self._update_counters()
         self._refresh_dashboard_activity()
         self._refresh_review_queue()
-        self._log_raw(f"[{timestamp}] REVIEW: {filename} — {reason}\n")
+        self._log_raw(f"[{timestamp}] PROPOSED: {proposal.original_name} -> {dest}/{proposal.proposed_name} "
+                      f"(conf={proposal.confidence:.0%}, {proposal.engine})\n")
 
     def _on_pipeline_error(self, timestamp: str, filename: str, error: str):
         """Called on Tk thread for unexpected pipeline exceptions."""
@@ -2067,135 +1972,130 @@ class SortSenseApp(ctk.CTk):
             self._dashboard_activity_box.insert("end", line)
         self._dashboard_activity_box.configure(state="disabled")
 
+    # -- Review Queue = approval screen ------------------------------------
+
+    def _open_proposals(self):
+        return [p for p in self.proposals.items() if p.status in (PENDING, APPROVED, REJECTED, FAILED)]
+
     def _refresh_review_queue(self):
-        """Rebuild the review queue scrollable frame from self._review_items with modern styling."""
         for widget in self._review_scroll.winfo_children():
             widget.destroy()
-
-        if not self._review_items:
+        self._name_entries = {}
+        items = self._open_proposals()
+        if not items:
             self._review_empty_label = ctk.CTkLabel(
-                self._review_scroll,
-                text="(Review queue is empty)",
-                font=ctk.CTkFont(family="Segoe UI", size=13),
-                text_color=COLOR_TEXT_MUTED,
-            )
+                self._review_scroll, text="(Nothing waiting for review)",
+                font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLOR_TEXT_MUTED)
             self._review_empty_label.grid(row=0, column=0, padx=16, pady=24)
             return
+        status_color = {PENDING: "#fbbf24", APPROVED: COLOR_ACCENT_LIGHT, REJECTED: COLOR_TEXT_MUTED, FAILED: "#f87171"}
+        for i, p in enumerate(items):
+            card = ctk.CTkFrame(self._review_scroll, corner_radius=12, fg_color=COLOR_CARD_BG,
+                                border_width=1, border_color=COLOR_CARD_BORDER)
+            card.grid(row=i, column=0, padx=4, pady=5, sticky="ew")
+            card.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(card, text=f"{p.original_name}", anchor="w",
+                         font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+                         text_color=COLOR_TEXT_PRIMARY).grid(row=0, column=0, columnspan=2, padx=12, pady=(10, 2), sticky="w")
+            ctk.CTkLabel(card, text=p.status.upper(), text_color=status_color.get(p.status, COLOR_TEXT_MUTED),
+                         font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")).grid(row=0, column=2, padx=12, sticky="e")
 
-        for i, item in enumerate(self._review_items):
-            fname = item[0]
-            reason = item[1]
+            entry = ctk.CTkEntry(card, height=30, fg_color=COLOR_INPUT_BG)
+            entry.insert(0, p.proposed_name)
+            entry.grid(row=1, column=0, columnspan=2, padx=12, pady=2, sticky="ew")
+            entry.bind("<FocusOut>", lambda _e, pid=p.id: self._commit_name(pid))
+            entry.bind("<Return>", lambda _e, pid=p.id: self._commit_name(pid))
+            self._name_entries[p.id] = entry
 
-            item_frame = ctk.CTkFrame(
-                self._review_scroll,
-                corner_radius=12,
-                fg_color=COLOR_CARD_BG,
-                border_width=1,
-                border_color=COLOR_CARD_BORDER,
-                height=62,
-            )
-            item_frame.grid(row=i, column=0, padx=4, pady=5, sticky="ew")
-            item_frame.grid_columnconfigure(1, weight=1)
+            dest = str(p.destination_dir) if p.destination_dir else "No destination yet - click Folder... to choose"
+            ctk.CTkLabel(card, text=f"Folder: {dest}", anchor="w", text_color=COLOR_TEXT_SECONDARY,
+                         font=ctk.CTkFont(family="Segoe UI", size=11)).grid(row=2, column=0, columnspan=3, padx=12, sticky="w")
+            detail = f"{p.category} | confidence {p.confidence:.0%} | {p.engine}"
+            if p.evidence:
+                detail += " | " + p.evidence[0]
+            ctk.CTkLabel(card, text=detail, anchor="w", justify="left", wraplength=620, text_color=COLOR_TEXT_MUTED,
+                         font=ctk.CTkFont(family="Segoe UI", size=11)).grid(row=3, column=0, columnspan=3, padx=12, sticky="w")
+            warn = " | ".join(p.warnings + ([p.error] if p.error else []))
+            if warn:
+                ctk.CTkLabel(card, text=warn, anchor="w", justify="left", wraplength=620, text_color="#fbbf24",
+                             font=ctk.CTkFont(family="Segoe UI", size=11)).grid(row=4, column=0, columnspan=3, padx=12, sticky="w")
 
-            file_icon = ctk.CTkFrame(
-                item_frame,
-                width=34,
-                height=34,
-                corner_radius=8,
-                fg_color=COLOR_BUTTON_SECONDARY,
-            )
-            file_icon.grid(row=0, column=0, padx=(14, 10), pady=12)
-            file_icon.grid_propagate(False)
-            ctk.CTkLabel(
-                file_icon,
-                text="📄",
-                font=ctk.CTkFont(size=14),
-            ).place(relx=0.5, rely=0.5, anchor="center")
+            btns = ctk.CTkFrame(card, fg_color="transparent")
+            btns.grid(row=5, column=0, columnspan=3, padx=10, pady=(6, 10), sticky="e")
+            for label, cmd, color in (
+                ("Folder...", lambda pid=p.id: self._choose_proposal_folder(pid), COLOR_BUTTON_SECONDARY),
+                ("Approve", lambda pid=p.id: self._approve_proposal(pid), COLOR_ACCENT),
+                ("Reject", lambda pid=p.id: self._reject_proposal(pid), COLOR_BUTTON_SECONDARY),
+            ):
+                ctk.CTkButton(btns, text=label, width=84, height=30, corner_radius=8, fg_color=color,
+                              command=cmd).pack(side="left", padx=4)
 
-            ctk.CTkLabel(
-                item_frame,
-                text=fname,
-                font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-                text_color=COLOR_TEXT_PRIMARY,
-            ).grid(row=0, column=1, padx=4, pady=12, sticky="w")
+    def _commit_name(self, pid: int):
+        entry = getattr(self, "_name_entries", {}).get(pid)
+        if entry is not None:
+            try:
+                self.proposals.set_name(pid, entry.get())
+            except (KeyError, ValueError) as exc:
+                self._log_raw(f"[Review] {exc}\n")
 
-            badge = ctk.CTkFrame(
-                item_frame,
-                corner_radius=8,
-                fg_color="#2b1e10",
-                border_width=1,
-                border_color="#78350f",
-            )
-            badge.grid(row=0, column=2, padx=12, pady=12)
-            ctk.CTkLabel(
-                badge,
-                text=reason,
-                font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
-                text_color="#fbbf24",
-            ).pack(padx=10, pady=3)
-
-            ctk.CTkButton(
-                item_frame,
-                text="Review",
-                width=84,
-                height=32,
-                corner_radius=8,
-                fg_color=COLOR_BUTTON_SECONDARY,
-                hover_color=COLOR_BUTTON_SECONDARY_HOVER,
-                text_color=COLOR_TEXT_PRIMARY,
-                border_width=1,
-                border_color="#263345",
-                font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
-                command=lambda it=item: self._manual_review(it),
-            ).grid(row=0, column=3, padx=(4, 14), pady=12)
-
-    def _manual_review(self, item: tuple):
-        """Open folder picker, move and rename the file, remove from queue."""
-        fname = item[0]
-        src_path = item[2] if len(item) > 2 else ""
-        suggested_dir = item[3] if len(item) > 3 else ""
-        suggested_name = item[4] if len(item) > 4 else ""
-
-        if not src_path or not Path(src_path).exists():
-            self._log_raw(f"[Review] File no longer exists: {src_path or fname}\n")
-            self._remove_review_item(item)
+    def _choose_proposal_folder(self, pid: int):
+        p = self.proposals.get(pid)
+        if p is None:
             return
-
-        initial_dir = suggested_dir if suggested_dir and Path(suggested_dir).exists() else str(Path.home())
-        target_dir = filedialog.askdirectory(
-            title=f"Where should '{fname}' go?",
-            initialdir=initial_dir,
-        )
-        if not target_dir:
-            return  # user cancelled — do nothing
-
-        use_name = suggested_name if suggested_name else Path(src_path).name
-
+        initial = str(p.destination_dir) if p.destination_dir and Path(p.destination_dir).exists() else str(Path.home())
+        chosen = filedialog.askdirectory(title=f"Where should '{p.original_name}' go?", initialdir=initial)
+        if not chosen:
+            return  # cancelled: change nothing
         try:
-            dest = _safe_move(Path(src_path), Path(target_dir), use_name)
-            self._log_raw(
-                f"[Review] Manually organised: {fname}\n"
-                f"  Renamed → {dest.name}\n"
-                f"  Moved to → {target_dir}\n"
-            )
-            self._processed_count += 1
-            self._processed_var.set(str(self._processed_count))
-            line = (
-                f"• [manual] — ✅ {fname}\n"
-                f"  Renamed → {dest.name} | Moved to → {target_dir}\n"
-            )
-            self._activity_lines.insert(0, line)
-            self._refresh_dashboard_activity()
-            self._remove_review_item(item)
-        except Exception as exc:
-            self._log_raw(f"[Review] Error moving {fname}: {exc}\n")
+            self.proposals.set_destination(pid, chosen)
+        except (KeyError, ValueError) as exc:
+            self._log_raw(f"[Review] Invalid destination: {exc}\n")
+        self._refresh_review_queue()
 
-    def _remove_review_item(self, item: tuple):
-        if item in self._review_items:
-            self._review_items.remove(item)
-            self._pending_count = max(0, self._pending_count - 1)
-            self._pending_var.set(str(self._pending_count))
-            self._refresh_review_queue()
+    def _approve_proposal(self, pid: int):
+        self._commit_name(pid)
+        try:
+            self.proposals.approve(pid)
+        except (KeyError, ValueError) as exc:
+            self._log_raw(f"[Review] Cannot approve: {exc}\n")
+        self._update_counters()
+        self._refresh_review_queue()
+
+    def _reject_proposal(self, pid: int):
+        try:
+            self.proposals.reject(pid)
+        except (KeyError, ValueError) as exc:
+            self._log_raw(f"[Review] {exc}\n")
+        self._update_counters()
+        self._refresh_review_queue()
+
+    def _approve_all_proposals(self):
+        """Approve every pending suggestion that has a destination (the user still presses Execute)."""
+        for p in self.proposals.items(PENDING):
+            self._commit_name(p.id)
+        ready = [p.id for p in self.proposals.items(PENDING) if p.destination_dir is not None]
+        _done, errors = self.proposals.approve_many(ready)
+        for pid, err in errors.items():
+            self._log_raw(f"[Review] {err}\n")
+        self._update_counters()
+        self._refresh_review_queue()
+
+    def _execute_approved_proposals(self):
+        def worker():
+            ok, bad, errs = self.proposals.execute_approved()
+            self.after(0, self._on_proposals_executed, ok, bad, errs)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_proposals_executed(self, ok: int, bad: int, errors: list[str]):
+        self._processed_count += ok
+        self._update_counters()
+        self._log_raw(f"[Execute] Moved: {ok}, Failed: {bad}\n")
+        for err in errors:
+            self._log_raw(f"[Execute] {err}\n")
+        self._activity_lines.insert(0, f"- Executed {ok} approved file(s); {bad} failed\n")
+        self._refresh_dashboard_activity()
+        self._refresh_review_queue()
+        self._refresh_history_list()
 
     def _log_raw(self, msg: str):
         """Append a raw message to the Activity Log textbox. Tk-thread only."""
