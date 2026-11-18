@@ -1956,20 +1956,54 @@ class SortSenseApp(ctk.CTk):
         self._processed_var.set(str(self._processed_count))
 
     def _on_proposal(self, timestamp: str, proposal):
-        """Tk thread: a new suggestion is waiting for the user."""
+        """Tk thread: handle new proposal (auto-move high confidence, review queue for low confidence)."""
         self.proposals.add(proposal)
         dest = proposal.destination_dir if proposal.destination_dir else "(you choose)"
-        self._activity_lines.insert(
-            0,
-            f"- {timestamp} - Suggestion: {proposal.original_name}\n"
-            f"  -> {proposal.proposed_name} | {proposal.category} | confidence {proposal.confidence:.0%} "
-            f"({proposal.engine})\n  Awaiting your approval\n",
-        )
+
+        if not proposal.needs_review and proposal.destination_dir is not None:
+            # High confidence (>= 0.85 and valid destination): auto-organize immediately
+            try:
+                record = self.safe_executor.execute_move(
+                    proposal.source_path,
+                    Path(proposal.destination_dir),
+                    proposal.proposed_name,
+                    mode_name=proposal.engine,
+                )
+                proposal.status = EXECUTED
+                proposal.operation_id = record.operation_id
+                proposal.executed_path = Path(record.destination_path)
+                self._processed_count += 1
+                self._activity_lines.insert(
+                    0,
+                    f"- {timestamp} - Auto-Organized: {proposal.original_name}\n"
+                    f"  -> {proposal.destination_dir.name}/{proposal.proposed_name} | {proposal.category} "
+                    f"(conf={proposal.confidence:.0%}, {proposal.engine})\n",
+                )
+                self._log_raw(f"[{timestamp}] AUTO-ORGANIZED: {proposal.original_name} -> {proposal.executed_path} "
+                              f"(conf={proposal.confidence:.0%}, {proposal.engine})\n")
+            except Exception as exc:
+                proposal.status = FAILED
+                proposal.error = str(exc)
+                self._activity_lines.insert(
+                    0,
+                    f"- {timestamp} - Auto-Organize Failed: {proposal.original_name}\n"
+                    f"  Error: {exc}\n",
+                )
+                self._log_raw(f"[{timestamp}] ERROR moving {proposal.original_name}: {exc}\n")
+        else:
+            # Low confidence or requires user decision: route to Review Queue
+            self._activity_lines.insert(
+                0,
+                f"- {timestamp} - Review Needed: {proposal.original_name}\n"
+                f"  -> Suggested: {proposal.proposed_name} | {proposal.category} | confidence {proposal.confidence:.0%} "
+                f"({proposal.engine})\n  Awaiting your review in Review Queue\n",
+            )
+            self._log_raw(f"[{timestamp}] REVIEW NEEDED: {proposal.original_name} -> {dest}/{proposal.proposed_name} "
+                          f"(conf={proposal.confidence:.0%}, {proposal.engine})\n")
+
         self._update_counters()
         self._refresh_dashboard_activity()
         self._refresh_review_queue()
-        self._log_raw(f"[{timestamp}] PROPOSED: {proposal.original_name} -> {dest}/{proposal.proposed_name} "
-                      f"(conf={proposal.confidence:.0%}, {proposal.engine})\n")
 
     def _on_pipeline_error(self, timestamp: str, filename: str, error: str):
         """Called on Tk thread for unexpected pipeline exceptions."""
