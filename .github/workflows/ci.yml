@@ -34,7 +34,7 @@ jobs:
 
       - name: Run test suite (non-GUI, non-Ollama)
         run: |
-          py -m pytest -q --ignore=tests/smoke_test_live.py
+          python -m pytest -q --ignore=tests/smoke_test_live.py
 
   build-windows:
     name: Windows Desktop Packaging
@@ -58,7 +58,7 @@ jobs:
 
       - name: Build PyInstaller distribution
         run: |
-          pyinstaller sortsense.spec --noconfirm
+          python -m PyInstaller sortsense.spec --noconfirm
 
       - name: Upload Windows exe artifact
         uses: actions/upload-artifact@v4
