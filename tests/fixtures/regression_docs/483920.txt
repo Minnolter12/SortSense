@@ -1,0 +1,6 @@
+UNIVERSITY DATABASE MANAGEMENT SYSTEMS
+Topic: Database Normalization
+1NF requires atomic attribute values. 2NF requires 1NF and no partial dependency
+of a non-prime attribute on a candidate key. 3NF requires 2NF and no transitive
+dependency of non-prime attributes on candidate keys.
+Example relation: STUDENT(StudentID, StudentName, DepartmentID, DepartmentName).

@@ -27,6 +27,7 @@ hidden_imports = (
     + collect_submodules('watchdog')
     + collect_submodules('app.intent')
     + [
+        'pypdf',
         'pymupdf',
         'fitz',
         'PIL',

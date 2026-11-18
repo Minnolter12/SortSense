@@ -53,3 +53,11 @@ class DocumentAnalysis(BaseModel):
         default=None,
         description="Primary date associated with the document in YYYY-MM-DD or text format."
     )
+    evidence: list[str] = Field(
+        default_factory=list,
+        description="Short human-readable reasons (evidence from the document) supporting the classification.",
+    )
+    source: str | None = Field(
+        default=None,
+        description="Which engine produced this analysis: 'gemma' or 'deterministic'. Overwritten by SortSense, not trusted from the model.",
+    )

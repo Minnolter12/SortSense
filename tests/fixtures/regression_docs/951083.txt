@@ -1,0 +1,5 @@
+OOPS - ENCAPSULATION
+Topic: Classes, Objects, and Data Hiding
+A class defines the state and behavior of objects. An object is an instance
+of a class. Encapsulation bundles data with methods and restricts direct access
+using access modifiers such as private, protected, and public.

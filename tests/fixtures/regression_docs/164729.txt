@@ -1,0 +1,5 @@
+DSA - GRAPH ALGORITHMS
+Topic: Breadth First Search and Depth First Search
+BFS explores level by level using a queue. DFS explores deeply using recursion
+or a stack. With an adjacency-list representation, both traversals take
+O(V + E) time.

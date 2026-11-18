@@ -52,6 +52,13 @@ class Settings(BaseModel):
         )
     )
 
+    # Seconds to wait for a Gemma response before falling back to deterministic mode
+    ollama_timeout: float = Field(
+        default_factory=lambda: _resolve_env_float(
+            "SORTSENSE_OLLAMA_TIMEOUT", "FILEMIND_OLLAMA_TIMEOUT", 120.0
+        )
+    )
+
     # Minimum score to accept a classification result
     confidence_threshold: float = Field(
         default_factory=lambda: _resolve_env_float(

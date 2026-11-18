@@ -1,0 +1,7 @@
+DBMS LAB - SQL JOINS
+Topic: Inner Join and Left Outer Join
+INNER JOIN returns rows with matching values in both tables. LEFT JOIN returns
+all rows from the left table and matching rows from the right table; unmatched
+right-side columns are NULL.
+SELECT s.name, e.course_id FROM Student s LEFT JOIN Enrollment e
+ON s.student_id = e.student_id;

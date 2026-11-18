@@ -1,0 +1,6 @@
+DATABASE TRANSACTIONS
+Topic: ACID Properties
+Atomicity means all operations succeed or none do. Consistency preserves
+database constraints. Isolation controls interference between concurrent
+transactions. Durability ensures committed changes survive failures.
+Review COMMIT, ROLLBACK, and SAVEPOINT.

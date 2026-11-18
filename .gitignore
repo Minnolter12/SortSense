@@ -1,7 +1,9 @@
 venv/
 .venv/
+.venv*/
 __pycache__/
 *.pyc
+*.pyo
 .env
 *.db
 .DS_Store
@@ -9,3 +11,5 @@ build/
 dist/
 *.egg-info/
 .pytest_cache/
+pytest_*.txt
+*.exe

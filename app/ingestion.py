@@ -56,50 +56,90 @@ def _make_doc(path: Path, text: str, page_count: int | None, status: str) -> Nor
     )
 
 
-def _ingest_pdf(path: Path) -> NormalizedDocument:
-    """Extract text from every page of a PDF using PyMuPDF."""
-    try:
-        import pymupdf  # imported here so the rest of the module works without it
-    except ImportError as exc:  # pragma: no cover
-        raise ImportError("PyMuPDF is required for PDF ingestion: pip install pymupdf") from exc
+def _extract_pdf_pymupdf(path: Path) -> tuple[str, int, bool]:
+    """Return (text, page_count, encrypted). Raises on unreadable files."""
+    import pymupdf
 
+    doc = pymupdf.open(str(path))
     try:
-        doc = pymupdf.open(str(path))
-    except Exception as exc:
-        logger.warning("Could not open PDF %s: %s", path, exc)
-        return _make_doc(path, text="", page_count=None, status="error")
-
-    try:
-        pages: list[str] = []
-        for page in doc:
-            pages.append(page.get_text())
-        text = "\n".join(pages)
-        page_count = len(doc)
-    except Exception as exc:
-        logger.warning("Error reading PDF pages in %s: %s", path, exc)
-        return _make_doc(path, text="", page_count=None, status="error")
+        if getattr(doc, "needs_pass", False):
+            return "", 0, True
+        pages = [page.get_text() for page in doc]
+        return "\n".join(pages), len(doc), False
     finally:
         doc.close()
 
-    status = "ok" if text.strip() else "empty"
-    return _make_doc(path, text=text, page_count=page_count, status=status)
+
+def _extract_pdf_pypdf(path: Path) -> tuple[str, int, bool]:
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(path))
+    if reader.is_encrypted:
+        try:
+            if not reader.decrypt(""):
+                return "", 0, True
+        except Exception:
+            return "", 0, True
+    pages = [(page.extract_text() or "") for page in reader.pages]
+    return "\n".join(pages), len(reader.pages), False
+
+
+def _ingest_pdf(path: Path) -> NormalizedDocument:
+    """Extract text from every page of a PDF (PyMuPDF preferred, pypdf fallback)."""
+    extractors = []
+    try:
+        import pymupdf  # noqa: F401
+        extractors.append(_extract_pdf_pymupdf)
+    except ImportError:
+        pass
+    try:
+        import pypdf  # noqa: F401
+        extractors.append(_extract_pdf_pypdf)
+    except ImportError:
+        pass
+    if not extractors:
+        raise ImportError("A PDF library is required for PDF ingestion: pip install pymupdf (or pypdf)")
+
+    for extract in extractors:
+        try:
+            text, page_count, encrypted = extract(path)
+        except Exception as exc:
+            logger.warning("PDF extraction with %s failed for %s: %s", extract.__name__, path, exc)
+            continue
+        if encrypted:
+            logger.warning("Encrypted PDF cannot be read: %s", path)
+            return _make_doc(path, text="", page_count=None, status="error")
+        status = "ok" if text.strip() else "empty"  # image-only PDFs end up here (no OCR)
+        return _make_doc(path, text=text, page_count=page_count, status=status)
+    return _make_doc(path, text="", page_count=None, status="error")
+
+
+def _decode_bytes(raw: bytes) -> str | None:
+    """Decode text bytes: BOM-aware UTF-8/UTF-16, then cp1252, then latin-1."""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return None
 
 
 def _ingest_text(path: Path) -> NormalizedDocument:
-    """Read a plain-text or Markdown file as UTF-8."""
+    """Read a plain-text or Markdown file with reasonable encoding handling."""
     try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        # Fall back to latin-1 for files that are not valid UTF-8
-        try:
-            text = path.read_text(encoding="latin-1")
-        except Exception as exc:
-            logger.warning("Could not decode %s: %s", path, exc)
-            return _make_doc(path, text="", page_count=None, status="error")
+        raw = path.read_bytes()
     except Exception as exc:
         logger.warning("Could not read %s: %s", path, exc)
         return _make_doc(path, text="", page_count=None, status="error")
-
+    text = _decode_bytes(raw)
+    if text is None or "\x00" in text[:2000]:
+        logger.warning("Could not decode %s as text", path)
+        return _make_doc(path, text="", page_count=None, status="error")
     status = "ok" if text.strip() else "empty"
     return _make_doc(path, text=text, page_count=None, status=status)
 

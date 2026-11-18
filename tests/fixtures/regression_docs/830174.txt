@@ -1,0 +1,5 @@
+DATA STRUCTURES AND ALGORITHMS
+Topic: Binary Search Tree
+A BST stores smaller keys in the left subtree and larger keys in the right.
+Inorder traversal visits keys in sorted order. Average search time is O(log n)
+for a balanced tree; worst case is O(n).

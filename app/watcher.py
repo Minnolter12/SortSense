@@ -22,10 +22,13 @@ logger = logging.getLogger(__name__)
 # Prefixes that identify hidden or temporary files we should ignore
 _IGNORED_PREFIXES: tuple[str, ...] = (".", "~$")
 
+_IGNORED_SUFFIXES: tuple[str, ...] = (".crdownload", ".part", ".partial", ".tmp", ".download", ".opdownload")
+
+
 def _should_ignore(path: Path) -> bool:
-    """Return True if *path* should be silently skipped."""
+    """Return True if *path* is hidden, temporary or an unfinished download."""
     name = path.name
-    return any(name.startswith(prefix) for prefix in _IGNORED_PREFIXES)
+    return any(name.startswith(prefix) for prefix in _IGNORED_PREFIXES) or name.lower().endswith(_IGNORED_SUFFIXES)
 
 import time
 class _SortSenseHandler(FileSystemEventHandler):
