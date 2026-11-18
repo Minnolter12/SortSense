@@ -18,9 +18,9 @@ logging.basicConfig(
 
 
 def print_banner() -> None:
-    """Print the FileMind startup banner."""
+    """Print the SortSense startup banner."""
     print("=" * 50)
-    print("  FileMind \u2014 local AI file intelligence")
+    print("  SortSense \u2014 local AI file organizer")
     print("=" * 50)
     print(f"  Watched directories  : {', '.join(str(d) for d in settings.watched_dirs)}")
     print(f"  Ollama host          : {settings.ollama_host}")

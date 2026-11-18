@@ -1770,12 +1770,23 @@ class SortSenseApp(ctk.CTk):
         if watch_dir:
             os.environ["SORTSENSE_WATCHED_DIR"] = watch_dir
             os.environ["FILEMIND_WATCHED_DIR"] = watch_dir
-            
-            # Apply instantly
-            if self.observer:
-                self.observer.stop()
-                # Do not block the GUI thread joining the observer
-            self.start_background_watcher()
+
+            # Stop old observer and start new one off the Tk thread so join()
+            # never blocks the GUI. self.observer is cleared immediately so
+            # _on_closing won't try to stop an already-stopping observer.
+            old_observer = self.observer
+            self.observer = None
+
+            def _restart_observer():
+                if old_observer is not None:
+                    try:
+                        old_observer.stop()
+                        old_observer.join(timeout=3.0)
+                    except Exception:
+                        pass
+                self.after(0, self.start_background_watcher)
+
+            threading.Thread(target=_restart_observer, daemon=True).start()
 
         self._log_raw(
             f"[Settings] Saved — model={settings.gemma_model}  host={settings.ollama_host}\n"
@@ -1975,7 +1986,7 @@ class SortSenseApp(ctk.CTk):
     # -- Review Queue = approval screen ------------------------------------
 
     def _open_proposals(self):
-        return [p for p in self.proposals.items() if p.status in (PENDING, APPROVED, REJECTED, FAILED)]
+        return [p for p in self.proposals.items() if p.status in (PENDING, APPROVED)]
 
     def _refresh_review_queue(self):
         for widget in self._review_scroll.winfo_children():
